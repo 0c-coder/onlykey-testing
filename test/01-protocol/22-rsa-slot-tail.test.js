@@ -1,45 +1,58 @@
 /*
- * The RSA slot tail: does a smaller key stored after a larger one is READ leave
- * the larger one's plaintext in flash?
+ * The RSA slot tail: a smaller key stored after a larger one is READ must not
+ * leave the larger one's plaintext in flash.
  *
- * This file exists to answer a question that was raised by reading and must not
- * be settled that way. `19-rsa-keys` turned up the shape of it and deliberately
- * left it alone; this measures it, and measures the two halves SEPARATELY,
- * because they are different severities and conflating them would overstate the
- * finding:
+ * This file measured a real defect and now pins its fix. The mechanism below is
+ * kept in full because the fix is one `memset` and the only way to judge that
+ * one line is to understand what it is for - and because the same shape (a
+ * plaintext key global that outlives its consumer) is still present for
+ * `ecc_private_key` and was deliberately left for a separate change.
  *
- *   1. Is the previous key's plaintext actually present in flash?
+ * It measures two things SEPARATELY, because they were different severities and
+ * conflating them would have overstated the finding:
+ *
+ *   1. Is the previous key's plaintext present in flash at all?
  *   2. Is any of it reachable through a normal device operation, rather than
  *      only by reading raw flash?
  *
- * THE MECHANISM UNDER TEST, so the measurement can be checked against a
- * prediction rather than fished for. Three sites in `rsa_priv_flash()` and
+ * THE MECHANISM, so the measurement can be checked against a prediction rather
+ * than fished for. Three sites in `rsa_priv_flash()` and
  * `okcore_flashget_RSA()` (okcore.cpp):
  *
  *   a. `okcore_flashget_RSA()` decrypts a stored key IN PLACE into the
  *      `rsa_private_key` global - so after any READ of an RSA slot, that global
- *      holds `type * 128` bytes of somebody's private key in the clear.
+ *      holds `type * 128` bytes of somebody's private key in the clear. STILL
+ *      TRUE; the fix does not change it.
  *   b. `rsa_priv_flash()` accumulates a new key into the SAME global, and only
  *      as far as the new key goes: the chunk guard for a 1024-bit key stops at
- *      offset 114, so bytes past 171 are never written.
+ *      offset 114, so bytes past 171 were never written. Since the clamp it
+ *      stops at 128, so bytes past 128 are never written.
  *   c. It then encrypts only `keysize` bytes - `okcore_aes_gcm_encrypt(...,
  *      keysize)` - and copies **all MAX_RSA_KEY_SIZE (512)** bytes of the global
  *      into the flash sector. Everything past `keysize` goes to flash exactly as
- *      it sat in RAM.
+ *      it sits in RAM. STILL TRUE, and it is why the fix has to be a `memset`
+ *      of `keysize..MAX_RSA_KEY_SIZE` immediately before that encrypt rather
+ *      than a narrower copy.
  *
- * So the prediction, for a 2048-bit key read and then a 1024-bit key stored:
+ * WHAT THIS USED TO MEASURE, for a 2048-bit key read and then a 1024-bit key
+ * stored - the prediction the file was written against:
  *
  *   flash slot-B region, offset 0..127     E(B), the new key, encrypted
  *   flash slot-B region, offset 128..170   the third chunk's report padding
  *   flash slot-B region, offset 171..255   *** key A's PLAINTEXT, bytes 171..255
  *   flash slot-B region, offset 256..511   whatever the global held before
  *
- * A's P||Q is P at 0..127 and Q at 128..255, so bytes 171..255 are the LOW 85
- * bytes of A's 128-byte Q. That is the number that decides how bad this is, and
- * it is why the test reports the run length rather than just "found": known low
- * bits of one factor is the Coppersmith setting, and 85 of 128 bytes is far past
- * the half-the-bits threshold that attack needs. A reader of this file should
- * take the length seriously and not just the boolean.
+ * A's P||Q is P at 0..127 and Q at 128..255, so bytes 171..255 were the LOW 85
+ * bytes of A's 128-byte Q. That number decided how bad it was: known low bits of
+ * one factor is the Coppersmith setting, and 85 of 128 bytes is far past the
+ * half-the-bits threshold that attack needs.
+ *
+ * WHAT IT MEASURES NOW. The same image, expected as E(B) then zeros, and the
+ * longest run of A's plaintext anywhere in it expected to be 0 rather than 85.
+ * The tests assert ZERO and not "shorter than 32", because the clamp alone
+ * would have REMOVED the padding at 128..170 and widened the residue from 85
+ * bytes to 384 - a partial fix here is worse than the defect, so a shortened
+ * residue must not read as a pass.
  *
  * WHY IT NEEDS THE READ IN THE MIDDLE. Without step (a) the global holds only
  * zeros from boot, and the tail written to flash is a tail of zeros - which is
@@ -51,9 +64,9 @@
  * which is not a client-visible surface at all: it is the emulator's backing
  * store, so this file carries `storage-files` and is emulated-only BY ITS
  * SUBJECT rather than by convenience. That is exactly the point of separating
- * the two questions - test 1 says the bytes are there, and only something with
- * raw flash access can see them. The second test is on the vendor surface and
- * says the device itself will not hand them over.
+ * the two questions - test 1 says whether the bytes are there, and only
+ * something with raw flash access could see them. The second test is on the
+ * vendor surface and says the device itself will not hand them over.
  */
 'use strict';
 
@@ -261,7 +274,7 @@ describe('the RSA slot tail', {
       'see the medium at all and no absence it reports means anything');
   }
 
-  it('a 1024-bit key stored after a 2048-bit key is READ leaves the older key\'s plaintext in flash.bin',
+  it('a 1024-bit key stored after a 2048-bit key is READ leaves NO plaintext in flash.bin',
     async ({ device, assert, signal, log }) => {
       /*
        * SURFACE: flash.bin - not a client-visible surface at all. See the header:
@@ -297,22 +310,27 @@ describe('the RSA slot tail', {
           `${MAX_RSA_KEY_SIZE}-byte slot stride`);
       }
 
-      assert.ok(run.len >= 32,
-        'no run of the 2048-bit key\'s plaintext is in flash - the tail is not carried, ' +
-        'and the DECIDE row in TODO should be closed as read-wrong');
-
       /*
-       * The length is the finding, not the boolean. Known low bits of one factor
-       * is the Coppersmith setting and half the bits is enough, so 64 of Q's 128
-       * bytes is already sufficient to factor the modulus. Asserted so a partial
-       * fix that shortens the residue without removing it still reads as a
-       * finding rather than as a pass.
+       * ZERO, and not merely "shorter than it was".
+       *
+       * rsa_priv_flash() now zeroes keysize..MAX_RSA_KEY_SIZE before the
+       * encrypt, so no byte of A reaches the medium at all. While the defect
+       * was live this asserted `run.len >= 64`, on the grounds that known low
+       * bits of one factor is the Coppersmith setting and half of Q is enough
+       * to factor the modulus - so a partial fix that merely SHORTENED the
+       * residue still had to read as a finding rather than as a pass.
+       *
+       * That reasoning inverts exactly. Anything above zero means the tail is
+       * not being cleared, and a shortened residue is still a leak, so the
+       * threshold here is not 64 or 32 but none at all.
        */
-      assert.ok(run.len >= 64,
-        `only ${run.len} contiguous bytes leaked, which is below the half-a-factor ` +
-        'threshold - still a leak, but re-assess the severity before reporting it');
-      log(`VERDICT: ${run.len} contiguous plaintext bytes of a 2048-bit key's ` +
-        'P||Q are on the medium');
+      assert.equal(run.len, 0,
+        `${run.len} contiguous plaintext bytes of the older 2048-bit key are ` +
+        'still on the medium, so the slot tail is not being zeroed before the ' +
+        'encrypt');
+      assert.equal(at, -1,
+        'the predicted 85-byte residue at key offset 171 is still in flash.bin');
+      log('VERDICT: no plaintext of the 2048-bit key is on the medium');
 
       /* And B, the key that was actually being stored, is NOT in the clear -
        * which is what says this is a tail-of-the-buffer defect rather than the
@@ -368,9 +386,16 @@ describe('the RSA slot tail', {
         'slot B answered nothing at all, so the assertion above proves nothing');
 
       /*
-       * And promoting the slot to a bigger type overwrites the residue rather
-       * than exposing it: this stores a 2048-bit key into slot B and shows the
-       * residue is gone from the image afterwards.
+       * And promoting the slot to a bigger type does not bring a residue back:
+       * this stores a 2048-bit key into slot B and shows the image is still
+       * clean afterwards.
+       *
+       * While the defect was live this measured `before` and `after` and
+       * asserted the residue SHRANK, because promotion was the one path that
+       * could have made the tail readable. With the tail zeroed there is
+       * nothing left to shrink, so what is left to check is that the larger
+       * write does not reintroduce one - the type-2 accumulate runs a fresh
+       * pass through the clamped branch.
        */
       const before = longestRun(flash(device), a.pq).len;
       const c = keypair(2048);
@@ -383,9 +408,8 @@ describe('the RSA slot tail', {
       const after = longestRun(flash(device), a.pq).len;
       log(`A's residue was ${before} bytes before slot B was promoted to 2048-bit, ` +
         `${after} after`);
-      assert.ok(after < before,
-        'declaring a larger type for the slot left the older key\'s residue intact - ' +
-        'if a client can raise the type WITHOUT a full-size write, the tail becomes ' +
-        'readable and the severity changes');
+      assert.equal(after, 0,
+        `promoting the slot to a larger type put ${after} contiguous bytes of the ` +
+        'older key back on the medium');
     });
 });

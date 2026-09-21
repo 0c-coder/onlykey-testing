@@ -276,52 +276,43 @@ describe('classic RSA over the WebAuthn tunnel', {
        * MAX_LARGE_RESP_CHUNK and MAX_RSA_KEY_SIZE.
        */
       /*
-       * GATED OFF BY DEFAULT, AND THE GATE IS THE BUG REPORT. Loading a 4096-bit
-       * key aborts the firmware - `rsa_priv_flash()`'s type-4 branch guards on
-       * `packet_buffer_offset <= 456` and then memcpy's a literal 57, so the
-       * ninth chunk writes index 512 of a 512-byte array. See
+       * IT WAS GATED OFF BY DEFAULT, AND THE GATE WAS THE BUG REPORT. Loading a
+       * 4096-bit key used to abort the firmware: `rsa_priv_flash()`'s type-4
+       * branch guards on `packet_buffer_offset <= 456` and then memcpy'd a
+       * literal 57, so the ninth chunk wrote index 512 of a 512-byte array. See
        * FINDING-rsa4096-overflow.md.
        *
-       * It cannot be pinned as a passing test the way a wrong ANSWER can: the
-       * failure kills the device host, and the runner classifies that as a
+       * It could not be pinned as a passing test the way a wrong ANSWER can:
+       * the failure killed the device host, and the runner classifies that as a
        * run-level abort before any assertion executes, so nothing inside a test
-       * can observe it. Left ungated it aborts every run of this file and both
-       * its order gates.
+       * could observe it. Left ungated it aborted every run of this file and
+       * both its order gates - hence `OKT_EXPECT_RSA4096_FIX`, which was there
+       * to be removed by whoever clamped the copy.
        *
-       * So it skips with the defect named, which puts it in every run's skip list
-       * rather than hiding it, and it runs the moment somebody sets the variable
-       * after fixing the overflow - at which point it becomes the boundary test
-       * this file was written for. Flipping this to "run it and exclude the file
-       * from full-tree runs" is a one-line change if that is preferred.
+       * The copy is clamped, so the variable is gone and this runs by default.
+       * It is now simply the boundary test the file was written for: 512 bytes
+       * is both MAX_LARGE_RESP_CHUNK and MAX_RSA_KEY_SIZE.
        */
       /*
-       * EMULATED ONLY, AND THE ENV VAR MUST NOT BE ABLE TO OVERRIDE THAT.
+       * STILL EMULATED ONLY, FOR A DIFFERENT REASON THAN BEFORE.
        *
-       * This is the one test in the file that is not hardware-capable, and it is
-       * gated at the TEST rather than on the suite because the other two ran
-       * against a physical key on 2026-08-06 and passed - gating the file would
-       * have thrown away real coverage.
+       * The old reason was that the write was known to be out of bounds and
+       * only `_FORTIFY_SOURCE` - the EMULATOR's build, not a key's - would stop
+       * it rather than let it land silently on whatever follows
+       * `rsa_private_key`. That reason is spent: there is no overflow to catch.
        *
-       * The reason is asymmetric in a way the env var alone does not capture.
-       * What makes this case safe to drive is `_FORTIFY_SOURCE`, which is the
-       * EMULATOR's: the one-byte overflow in `rsa_priv_flash()` aborts at the
-       * point of the write, which is how the defect was found at all. On a key
-       * there is no such build, so the same write lands silently and corrupts
-       * whatever follows `rsa_private_key`. Setting the variable on a hardware
-       * run would therefore aim a known out-of-bounds write at a real device
-       * with nothing to catch it - so the capability is checked FIRST and the
-       * variable can only ever arm this where the abort exists.
+       * What replaces it is provenance. The emulator stages and builds firmware
+       * from this checkout, so it demonstrably carries the clamp. A physical key
+       * runs whatever is flashed on it, and nothing here can tell whether that
+       * build has the fix - so an unguarded run would aim the old out-of-bounds
+       * write at a real device with nothing to catch it. The capability check
+       * stays until the suite can read a firmware version it trusts.
        */
       if (!device.capabilities.has('emulated')) {
-        skip('a 4096-bit key load is a known out-of-bounds WRITE ' +
-          '(FINDING-rsa4096-overflow.md); it is only safe to drive where ' +
-          '_FORTIFY_SOURCE aborts it, which is the emulator - on a key the same ' +
-          'write lands silently');
-      }
-      if (process.env.OKT_EXPECT_RSA4096_FIX !== 'yes') {
-        skip('loading a 4096-bit RSA key overflows rsa_private_key by one byte and aborts ' +
-          'the firmware (FINDING-rsa4096-overflow.md); set OKT_EXPECT_RSA4096_FIX=yes once ' +
-          'rsa_priv_flash() clamps the copy to keysize - offset');
+        skip('a 4096-bit key load was an out-of-bounds WRITE before the clamp ' +
+          '(FINDING-rsa4096-overflow.md); only the emulator is built from this ' +
+          'checkout and so known to carry the fix - a key runs whatever is ' +
+          'flashed on it');
       }
       if (!transit.probe().ok) skip(transit.probe().why);
       const self = transit.selfTest();

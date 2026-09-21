@@ -1,10 +1,16 @@
 # Finding: an RSA slot's unused tail carries the previous key's plaintext to flash
 
-**Status:** measured on the emulator, reproducible, `libraries@83353cf`.
+**Status:** **FIXED.** Measured on the emulator, reproducible, against
+`libraries@83353cf`; closed by `libraries@b6ca21c` on branch `rsa-fix`
+(`bm-ok/0c-coder-libraries`), which is pending upstream. Longest run of the
+older key's plaintext anywhere in `flash.bin`: **0 bytes**, where it was 85.
 **Severity:** confidentiality of key material **at rest**. Not remotely
 reachable - see "What it is NOT", which is as load-bearing as the rest.
 **Reproducer:** `onlykey-testing`, `01-protocol/22-rsa-slot-tail.test.js`,
-which measures both halves separately and fails if either changes.
+which measures both halves separately and fails if either changes. It asserted
+the defect until the fix landed and asserts its absence now; the file keeps the
+mechanism write-up because the fix is one `memset` and that line cannot be
+judged without it.
 
 ## Summary
 
@@ -151,20 +157,33 @@ reads as "no leak". Verified against a slot label, which is stored in the clear:
 `oktprobe00961683` was written and `borpkto00169386`-style word-reversed bytes
 were on the medium; un-reversing gives the label back exactly.
 
-## Suggested fix
+## The fix, as applied
 
-Zero the unused tail before the flash copy, so nothing beyond the new key's own
-material can ever be written:
+`libraries@b6ca21c`, branch `rsa-fix`. The unused tail is zeroed immediately
+before the encrypt, so nothing beyond the new key's own material can be
+written:
 
 ```c
 memset(rsa_private_key + keysize, 0, MAX_RSA_KEY_SIZE - keysize);
 okcore_aes_gcm_encrypt(rsa_private_key, buffer[5], buffer[6], profilekey, keysize);
 ```
 
+**It ships in the same commit as the 4096-bit clamp, and it has to.** What
+bounded this residue to 85 bytes was the other defect's padding: a 1024-bit
+key's third report copied a literal 57 bytes from offset 114, so 128..170
+reached flash as that report's zero padding and the older key's plaintext
+started at 171. Clamping that copy removes the padding, which would widen the
+residue from 85 bytes to the full 384. Clamping without zeroing is a larger leak
+than either defect alone, so neither half can be committed on its own. See
+`FINDING-rsa4096-overflow.md`.
+
 Wiping `rsa_private_key` after every `okcore_flashget_RSA()` consumer is finished
 with it would also close it, and is the stronger form - the global holding a
 plaintext private key between operations is the underlying condition, and the
 same pattern exists for `ecc_private_key`, which this finding has not examined.
+**That was deliberately left out of the fix**: it touches every consumer rather
+than one function, and a security change a maintainer has to audit is worth
+keeping to the smallest diff that closes the defect.
 
 Note the same 512-byte copy is what makes an **RSA wipe** leave the slot's key
 type in EEPROM (`rsa_priv_flash()` returns from its `wipe` branch before
@@ -179,7 +198,7 @@ sudo sysctl -w vm.mmap_min_addr=4096
 node bin/okt.js run test/01-protocol/22-rsa-slot-tail.test.js
 ```
 
-Two tests: the first measures the residue, the second measures that it is not
-reachable over the vendor interface. Both carry a control - the first proves the
+Two tests: the first measures that no residue is present, the second measures
+that the vendor interface would not hand one over if there were. Both carry a control - the first proves the
 flash image is current and correctly un-swapped before believing any absence, and
 the second proves the bounded answer is a real answer rather than silence.
