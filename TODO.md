@@ -2063,3 +2063,13 @@ Tracked here so they do not get lost, but they are not coverage.
       `onlykey-usb-hid-passthrough/tools/halfkay_flash.py` if direct-attached
       flashing becomes routine there too. The kit has its own copy; the original
       still dies at block 4 without a proxy.
+
+## In-process vendor capture reorders a long answer (2026-09-22)
+
+`02-cli/15-age-file-interop` found it: the 1216-byte derived X-Wing recipient
+(19 reports) comes back from `device.reportsSince(IFACE.VENDOR, …)` rotated -
+reports 9..18, then 0..8 - identically every time, while `age-plugin-onlykey`
+reading the kernel hidraw node gets it in order (and `02-cli/07` decrypts to
+it). The firmware sends in order. Suspect the device-host's back-pressure when
+nothing drains the gadget node. Until fixed, anything longer than ~9 reports
+should be read through the node (15 now uses the plugin for the recipient).
