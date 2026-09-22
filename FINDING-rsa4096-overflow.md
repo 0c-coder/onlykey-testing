@@ -1,6 +1,40 @@
 # Finding: loading a 4096-bit RSA key writes one byte past `rsa_private_key`
 
-**Status:** measured on the emulator, deterministic, `libraries@83353cf`.
+**Status: FIXED.** `libraries:merge/user-input-modes-pqc` clamps the ninth copy
+to `MAX_RSA_KEY_SIZE - packet_buffer_offset`. Verified on the emulator
+2026-09-22: a 4096-bit key loads, the device survives, and the modulus read back
+out of flash after a reboot equals `p*q` byte for byte - so the clamp is
+lossless as well as safe (8 x 57 + a clamped 56 = exactly 512; the dropped byte
+is the host's padding in the ninth report).
+
+The regression test moved with the fix. `01-protocol/25-rsa4096-overflow.test.js`
+asserted the device CRASHES and so went red the day the clamp landed; it is
+replaced by `01-protocol/25-rsa4096-load.test.js`, which asserts the key loads
+INTACT. That file's modulus check is the one that matters and it was proved
+against a deliberately narrowed clamp (`room - 1`): the load still reported
+`Successfully set RSA Key`, the device still survived, and only the modulus
+comparison caught it - `differs at byte 254 of 512`. A survival-only test would
+have passed.
+
+`23-rsa-tunnel`'s 4096 case is ungated and `OKT_EXPECT_RSA4096_FIX` is gone -
+but ungating alone did not make it pass, and what it uncovered is worth its own
+line: every test in that file was failing on transit v2, not on the key size.
+The kit's tunnel client was still speaking the old length-preserving box, so the
+firmware discarded each request whole and the host waited out a 30-second
+timeout with nothing to attribute it to. `lib/device/transit.js` now seals and
+opens `[counter(4)][ciphertext][tag(16)]`, request chunks are 171 bytes
+(245 - 20 framing, rounded down to a multiple of 57) and the file is green. The
+framing also moved the boundary the file was written for, in its favour: a
+512-byte RSA-4096 signature is staged as 532 and served in TWO chunks, so
+RSA-4096 is now the smallest classic response that exercises the multi-chunk
+path the alpha report pointed at, with RSA-2048 (276 framed) as the one-chunk
+control beside it.
+
+Both files stay gated `emulated`, because a key running firmware WITHOUT the
+clamp is still a key this drives an out-of-bounds write at, with no
+`_FORTIFY_SOURCE` to catch it.
+
+**Originally:** measured on the emulator, deterministic, `libraries@83353cf`.
 **Severity:** out-of-bounds WRITE, reachable from a normal client
 (`onlykey-cli loadkey` with any 4096-bit RSA key). Higher than the slot-tail
 finding, which is read-only exposure at rest.
