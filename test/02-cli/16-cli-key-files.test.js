@@ -168,7 +168,7 @@ describe('onlykey-cli, loading keys from PGP files', {
 
       const since = device.mark(IFACE.VENDOR);
       const result = await cli.run('onlykey-cli',
-        ['loadpqc', key.file, 'RSA1'], { timeoutMs: 120000, signal });
+        ['loadpqc', key.file, 'PQC1'], { timeoutMs: 120000, signal });
 
       assert.equal(result.code, 0,
         `loadpqc failed: ${result.stderr || result.stdout}`);

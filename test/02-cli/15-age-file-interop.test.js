@@ -25,28 +25,25 @@
  * `client-access`, exactly as for the rest of section 2.
  *
  * THE DEVICE HALF IS DONE OVER RAW HID, not through the tunnel, and that is
- * what keeps this file cheap. The derived X-Wing branch in okcrypto.cpp has no
- * CRYPTO_AUTH gate and does not check `derivedkeymode` - bit 3 is read only on
- * the tunnelled path in fido2/ok_extension.cpp - so no button press, no config
- * mode and no `derivedkeymode` setup is needed. 02-cli/07-derived-xwing
- * established that; this file relies on it and re-asserts it, by counting the
- * device's own priming marker across every step.
+ * what keeps this file cheap. Derived decapsulation asks for confirmation by
+ * default (field 30 = press), so every decapsulation here runs with field 30
+ * set to "none" - the unattended-agent setting, honoured on every build for
+ * slot 128 - and the default is put back after each. The PRIMED counts check
+ * that no challenge was primed while it was set.
  *
- * It is also the first time the KIT sends the derived pair itself rather than
- * letting the plugin do it. Both are worth reading as claims about the wire:
+ * The wire, since device custody (2026-09). The kit sends the decapsulation
+ * itself; the recipient is read through the plugin, because the kit's
+ * in-process capture reorders a 19-report answer (see deriveRecipient):
  *
  *   OKGETPUBKEY slot 128, buffer[6] = KEYTYPE_XWING, tag(32)
- *                 -> [ pk_X(32) | mlkem_seed(32) ]
- *   OKDECRYPT   slot 128, tag(32) || ct_X(32) = 64 bytes, which does NOT fit
- *                 one 57-byte report, so it goes as two with the continuation
- *                 marker in buffer[6]: 0xFF then the remaining count
- *                 -> [ ss_X(32) | mlkem_seed(32) ]
+ *                 -> [ pk_M(1184) | pk_X(32) ], 19 reports
+ *   OKDECRYPT   slot 128, [ tag(32) | ct(1120) ] = 1152 bytes = 20 x 57 + 12,
+ *                 0xFF in buffer[6] on every report but the last
+ *                 -> ss(32), the X-Wing shared secret
  *
- * That second one is the framing that used to be broken - okcrypto_decrypt()
- * required (buffer[6] & 0x0F) == KEYTYPE_XWING and buffer[6] carries a
- * continuation marker here, so neither chunk matched and both fell through to
- * slot dispatch, returning a shared secret that never matched with no error
- * anywhere. Sending it by hand is what makes this file stand guard over that.
+ * This file used to receive [pk_X | mlkem_seed] and [ss_X | mlkem_seed] and do
+ * the ML-KEM half host-side. The firmware stopped returning the seed - it is
+ * private key material - so the device's ss is now used as is.
  *
  * SURFACES, per test - see PRODUCTION.md. Everything here is the vendor
  * interface plus host-side arithmetic; the console is read for nothing.
@@ -98,43 +95,93 @@ describe('the web app\'s age container against the real age binary', {
 
   const ageFile = () => webenv.loadPlain('age_file.js');
 
-  /** [pk_X | mlkem_seed] for a label, straight over the vendor interface. */
+  /*
+   * DEVICE CUSTODY (firmware 2026-09): the device holds both halves of a derived
+   * X-Wing key. It used to answer a recipient request with [pk_X | mlkem_seed]
+   * and a decapsulation with ss_X, leaving the host to expand the ML-KEM half
+   * and combine - which meant a public-key request returned private material.
+   * Now:
+   *
+   *   OKGETPUBKEY  slot 128, keytype 6, tag(32)       -> [pk_M(1184) | pk_X(32)]
+   *   OKDECRYPT    slot 128, [tag(32) | ct(1120)]     -> ss(32), the X-Wing secret
+   *
+   * so this file checks the web app's container code against the real age
+   * binary with the device's own shared secret, and nothing is split host-side.
+   */
+  const XWING_PK = 1216;
+  const XWING_CT = 1120;
+
+  /**
+   * The whole 1216-byte derived recipient for a label, read the way a real host
+   * reads it: age-plugin-onlykey, over the kernel hidraw node.
+   *
+   * NOT from the kit's in-process vendor capture. For this 19-report answer
+   * that capture comes back ROTATED - reports 9..18 then 0..8, the same every
+   * time (measured 2026-09-22: the plugin's first 16 bytes sit at offset 640
+   * of the capture, the capture's at 576 of the plugin's) - while the plugin,
+   * reading the node, gets the stream in order, and 02-cli/07 proves its
+   * recipient right by decrypting to it. The firmware sends the reports in
+   * order (send_transport_response, i += 64), so the rotation is on the
+   * harness side: nothing drains the gadget's hidraw node while the kit
+   * captures in-process, and the device-host's back-pressure reorders what
+   * the capture sees. Tracked in TODO; until then the node is the instrument.
+   */
   async function deriveRecipient(device, label, { signal }) {
-    const since = device.mark(IFACE.VENDOR);
-    device.sendVendor({
-      msg: okmsg.MSG.OKGETPUBKEY,
-      slot: WEB_DERIVATION,
-      field: KEYTYPE_XWING,
-      payload: labelTag(label),
-    });
-    const reply = await device.waitHid(IFACE.VENDOR, { since, match: ANSWER, timeoutMs: 10000, signal });
-    if (reply.length < 64) throw new Error(`derived recipient came back ${reply.length} bytes`);
-    return { pkX: reply.subarray(0, 32), seed: reply.subarray(32, 64) };
+    const r = await cli.run('age-plugin-onlykey',
+      ['--derived', '--label', label, '--recipient'], { timeoutMs: 30000, signal });
+    if (r.code !== 0) throw new Error(`age-plugin-onlykey --recipient failed: ${r.stderr}`);
+    const pk = Buffer.from(ours.decodeRecipient(r.stdout.trim()));
+    if (pk.length !== XWING_PK) throw new Error(`derived recipient decoded to ${pk.length} bytes, not ${XWING_PK}`);
+    return pk;
   }
 
   /**
-   * ss_X for a label and a ct_X, over the multi-packet derived branch.
-   *
-   * 64 bytes over a 57-byte report, so two sends: the first carries 57 with
-   * 0xFF in buffer[6] meaning "more coming", the second carries the remaining 7
-   * with its own count there. The firmware reassembles into its own 64-byte
-   * buffer and only then derives.
+   * The X-Wing shared secret for a label and a stanza ciphertext, over the
+   * chunked derived branch: [tag | ct] = 1152 bytes = 20 x 57 + 12, 0xFF in
+   * buffer[6] meaning "more coming" and the real count on the last report.
+   * Run it under withoutPress(): decapsulation asks for confirmation by default.
    */
-  async function deriveDecap(device, label, ctX, { signal }) {
-    const payload = Buffer.concat([labelTag(label), Buffer.from(ctX)]);
-    if (payload.length !== 64) throw new Error(`derive decap payload must be 64 bytes`);
+  async function deriveDecap(device, label, ciphertext, { signal }) {
+    if (ciphertext.length !== XWING_CT) throw new Error(`stanza ciphertext is ${ciphertext.length} bytes, not ${XWING_CT}`);
+    const payload = Buffer.concat([labelTag(label), Buffer.from(ciphertext)]);
+    const since = device.mark(IFACE.VENDOR);
+    for (let off = 0; off < payload.length; off += 57) {
+      const part = payload.subarray(off, off + 57);
+      const last = off + 57 >= payload.length;
+      device.sendVendor({
+        msg: okmsg.MSG.OKDECRYPT, slot: WEB_DERIVATION,
+        field: last ? part.length : 0xFF, payload: part,
+      });
+    }
+    const reply = await device.waitHid(IFACE.VENDOR, { since, match: ANSWER, timeoutMs: 15000, signal });
+    const said = okmsg.text(reply);
+    if (/^Error|^Timeout/.test(said)) throw new Error(`derived decaps refused: ${said}`);
+    return reply.subarray(0, 32);
+  }
 
+  /* Field 30 (slot 128's user input mode), so decapsulation runs unattended
+   * here; the default (press) is put back afterwards. */
+  const FIELD_WEB_AGENT_DERIVE_MODE = 30;
+  async function setDeriveMode(device, value, { signal }) {
+    await pqc.readyForKeygen(device, { signal });
     const since = device.mark(IFACE.VENDOR);
     device.sendVendor({
-      msg: okmsg.MSG.OKDECRYPT, slot: WEB_DERIVATION, field: 0xFF, payload: payload.subarray(0, 57),
+      msg: okmsg.MSG.OKSETSLOT, slot: 1, field: FIELD_WEB_AGENT_DERIVE_MODE,
+      payload: Buffer.from([value]),
     });
-    device.sendVendor({
-      msg: okmsg.MSG.OKDECRYPT, slot: WEB_DERIVATION, field: 7, payload: payload.subarray(57),
-    });
-
-    const reply = await device.waitHid(IFACE.VENDOR, { since, match: ANSWER, timeoutMs: 15000, signal });
-    if (reply.length < 64) throw new Error(`derived decaps came back ${reply.length} bytes`);
-    return { ssX: reply.subarray(0, 32), seed: reply.subarray(32, 64) };
+    const ack = await device.waitHid(IFACE.VENDOR, { since, match: /Success|Error/, timeoutMs: 8000, signal });
+    await device.restart({ signal });
+    await device.ensureUnlocked(PINS.primary, { signal });
+    return okmsg.text(ack).trim();
+  }
+  async function withoutPress(device, work, { signal }) {
+    const set = await setDeriveMode(device, 2, { signal });
+    if (!/^Success/.test(set)) throw new Error(`setting field 30 to no-press: ${set}`);
+    try {
+      return await work();
+    } finally {
+      await setDeriveMode(device, 1, { signal });
+    }
   }
 
   /** A working directory that a failure leaves behind as evidence. */
@@ -156,17 +203,15 @@ describe('the web app\'s age container against the real age binary', {
        */
       const primed = device.log.count(PRIMED);
 
-      const { pkX, seed } = await deriveRecipient(device, LABEL, { signal });
-      const recipient = ours.encodeRecipient(ours.buildRecipient(pkX, seed));
-      log(`kit derives    ${recipient.slice(0, 40)}...`);
+      const pk = await deriveRecipient(device, LABEL, { signal });
+      const recipient = ours.encodeRecipient(pk);
+      log(`device derives ${recipient.slice(0, 40)}...`);
 
-      const viaPlugin = await cli.run('age-plugin-onlykey',
-        ['--derived', '--label', LABEL, '--recipient'], { timeoutMs: 30000, signal });
-      assert.equal(viaPlugin.code, 0, `the plugin failed: ${viaPlugin.stderr}`);
-      log(`plugin derives ${viaPlugin.stdout.trim().slice(0, 40)}...`);
-
-      assert.equal(recipient, viaPlugin.stdout.trim(),
-        'the kit and the plugin built different recipients from the same label');
+      /* The kit no longer builds a recipient of its own - the device holds both
+       * halves - so "kit and plugin agree" became "the device answers the same
+       * recipient twice", and the round trips below are what prove it right. */
+      const again = ours.encodeRecipient(await deriveRecipient(device, LABEL, { signal }));
+      assert.equal(recipient, again, 'the device derived two different recipients for one label');
 
       const dir = workdir();
       fs.writeFileSync(path.join(dir, 'plain.txt'), PLAINTEXT);
@@ -208,8 +253,8 @@ describe('the web app\'s age container against the real age binary', {
       const dir = workdir();
 
       try {
-        const { pkX, seed } = await deriveRecipient(device, LABEL, { signal });
-        const recipient = ours.encodeRecipient(ours.buildRecipient(pkX, seed));
+        const pk = await deriveRecipient(device, LABEL, { signal });
+        const recipient = ours.encodeRecipient(pk);
 
         fs.writeFileSync(path.join(dir, 'plain.txt'), PLAINTEXT);
         const sealed = path.join(dir, 'real.age');
@@ -221,8 +266,8 @@ describe('the web app\'s age container against the real age binary', {
         log(`stanza ciphertext ${ciphertext.length} bytes`);
 
         /* The one device call, and the only 32 bytes of the ciphertext it sees. */
-        const { ssX } = await deriveDecap(device, LABEL, ours.ctXOf(ciphertext), { signal });
-        const shared = ours.splitDecapsulate(ssX, ciphertext, pkX, seed);
+        const shared = await withoutPress(device,
+          () => deriveDecap(device, LABEL, ciphertext, { signal }), { signal });
 
         const opened = await ageFile().decryptAgeFile(new Uint8Array(fileBytes), async () => shared);
         assert.bytes(Buffer.from(opened), Buffer.from(PLAINTEXT),
@@ -260,8 +305,7 @@ describe('the web app\'s age container against the real age binary', {
       const dir = workdir();
 
       try {
-        const { pkX, seed } = await deriveRecipient(device, LABEL, { signal });
-        const pk = ours.buildRecipient(pkX, seed);
+        const pk = await deriveRecipient(device, LABEL, { signal });
 
         /* The sender's side, with nothing plugged in. */
         const { ciphertext, sharedSecret } = ours.xwingEncapsHost(pk);
@@ -282,9 +326,10 @@ describe('the web app\'s age container against the real age binary', {
         fs.writeFileSync(path.join(dir, 'identity.txt'), `${identity.trim()}\n`);
 
         const out = path.join(dir, 'opened.txt');
-        const dec = await cli.run('age',
+        const dec = await withoutPress(device, () => cli.run('age',
           ['-d', '-i', path.join(dir, 'identity.txt'), '-o', out, sealed],
-          { timeoutMs: 90000, signal, env: { PATH: `${cli.VENV_BIN}:${process.env.PATH}` } });
+          { timeoutMs: 90000, signal, env: { PATH: `${cli.VENV_BIN}:${process.env.PATH}` } }),
+        { signal });
 
         assert.equal(dec.code, 0,
           `the real age binary refused the web app's container: ${dec.stderr.slice(-400)}`);
@@ -326,8 +371,8 @@ describe('the web app\'s age container against the real age binary', {
       const dir = workdir();
 
       try {
-        const { pkX, seed } = await deriveRecipient(device, LABEL, { signal });
-        const recipient = ours.encodeRecipient(ours.buildRecipient(pkX, seed));
+        const pk = await deriveRecipient(device, LABEL, { signal });
+        const recipient = ours.encodeRecipient(pk);
 
         fs.writeFileSync(path.join(dir, 'plain.txt'), PLAINTEXT);
         const sealed = path.join(dir, 'real.age');
@@ -336,8 +381,8 @@ describe('the web app\'s age container against the real age binary', {
 
         const fileBytes = fs.readFileSync(sealed);
         const ciphertext = pqc.xwingCiphertextOf(sealed);
-        const { ssX } = await deriveDecap(device, LABEL, ours.ctXOf(ciphertext), { signal });
-        const shared = ours.splitDecapsulate(ssX, ciphertext, pkX, seed);
+        const shared = await withoutPress(device,
+          () => deriveDecap(device, LABEL, ciphertext, { signal }), { signal });
 
         /* Untouched, it opens - so the tamper below is the only variable. */
         const lib = ageFile();

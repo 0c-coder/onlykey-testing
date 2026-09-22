@@ -6,7 +6,7 @@
  * `OKSETPRIV` is not reachable over the WebAuthn transport at all - confirmed
  * by direct firmware read, and recorded in composite_pgp.js's own comments - so
  * a composite key can only be loaded by a client that speaks the vendor
- * interface. That is `onlykey-cli setpqc`, and therefore section 2, and
+ * interface. That is `onlykey-cli setkey PQC1 p` (setpqc until 1.3.0), and therefore section 2, and
  * therefore this file has to exist before the pgp-pqc page can be tested at all.
  *
  * Verifying the load is the interesting part, because the device will not tell
@@ -30,7 +30,7 @@ const cli = require('../../lib/cli');
 const webenv = require('../../lib/webenv');
 const pqc = require('../../lib/pqc');
 
-const SLOT_NAME = 'RSA1';
+const SLOT_NAME = 'PQC1';  // python-onlykey 1.3.0 names composite slots PQC1-PQC4 only
 const SLOT_ID = 1;
 const HALF_ECC = 0;
 
@@ -80,12 +80,12 @@ describe('loading a composite PGP-PQC key', {
     await device.enterConfigMode(PINS.primary, { signal });
 
     const result = await cli.run('onlykey-cli',
-      ['setpqc', SLOT_NAME, blob.toString('hex')], { timeoutMs: 60000, signal });
+      ['setkey', SLOT_NAME, 'p', blob.toString('hex')], { timeoutMs: 60000, signal });
 
     assert.equal(result.code, 0,
-      `setpqc failed: ${result.stderr || result.stdout}`);
+      `setkey p failed: ${result.stderr || result.stdout}`);
     assert.includes(`${result.stdout}${result.stderr}`, 'Loaded composite',
-      `setpqc did not report a load: ${result.stdout}`);
+      `setkey p did not report a load: ${result.stdout}`);
   });
 
   it('signs with the key it was given', async ({ device, assert, signal, log }) => {
