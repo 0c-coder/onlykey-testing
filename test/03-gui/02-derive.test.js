@@ -41,7 +41,17 @@ const webenv = require('../../lib/webenv');
  * malformed rather than a setting being off.
  */
 const FIELD_DERIVED_KEY_MODE = 21;
-const DERIVE_WITHOUT_TOUCH = 8;   // bit 3
+/*
+ * USER_INPUT_NONE, not a bit.
+ *
+ * This was 8 - "bit 3" - which is the LEGACY field-21 bitfield encoding. Field
+ * 30 is an enum: 0 = challenge code, 1 = button press (the default), 2 = no
+ * press. set_slot() refuses anything above USER_INPUT_NONE, so 8 came back as
+ * "Error invalid user input mode" and read as a firmware fault. Splitting the
+ * enum out of the bitfield is exactly what field 30 exists for (okcore.h), and
+ * four files in this section still spoke the old encoding.
+ */
+const DERIVE_WITHOUT_TOUCH = 2;   // USER_INPUT_NONE
 
 /* onlykey-3rd-party.js's own KEYTYPE. P256R1 is the one the password-generator
  * page uses, and the only one whose derive pair does a real ECDH. */
@@ -86,7 +96,7 @@ describe('derived keys, through the web app\'s library', {
   const deriveShared = (ok, data, pubkey, keytype) => settle('derive_shared_secret',
     (cb) => ok.derive_shared_secret(data, pubkey, keytype, NO_PRESS, cb));
 
-  it('allows derivation without a touch', async ({ device, assert, signal }) => {
+  it('allows derivation without a touch', async ({ device, assert, signal, skip }) => {
     /*
      * A visible step, because it changes the DEVICE rather than the test, and
      * because the failure it prevents does not look like a missing setting: the
@@ -106,12 +116,17 @@ describe('derived keys, through the web app\'s library', {
       msg: okmsg.MSG.OKSETSLOT,
       slot: 1,
       field: FIELD_DERIVED_KEY_MODE,
-      payload: String(DERIVE_WITHOUT_TOUCH),
+      payload: Buffer.from([DERIVE_WITHOUT_TOUCH]),
     });
 
     const reply = await device.waitHid(IFACE.VENDOR,
       { since, match: /Successfully set|Error/, timeoutMs: 5000, signal });
     const text = okmsg.text(reply);
+    if (/unsupported user input mode/.test(text)) {
+      skip('this build has OK_ALLOW_NO_PRESS off, so user-input mode 2 (no press) is ' +
+        'refused by design - onlykey.h ships it commented out and a stale 2 in EEPROM ' +
+        'fails closed to challenge code. There is no no-touch derivation to test here');
+    }
     assert.ok(!/Error/.test(text), `setting the derived-key mode failed: ${text}`);
 
     /* The only way out of config mode, and it re-locks on the way. */

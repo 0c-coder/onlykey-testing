@@ -36,7 +36,17 @@ const webenv = require('../../lib/webenv');
 /* See 02-derive: the device refuses a touch-free derivation without this, and
  * says so as CTAP2_ERR_EXTENSION_NOT_SUPPORTED. */
 const FIELD_DERIVED_KEY_MODE = 21;
-const DERIVE_WITHOUT_TOUCH = 8;
+/*
+ * USER_INPUT_NONE, not a bit.
+ *
+ * This was 8 - "bit 3" - which is the LEGACY field-21 bitfield encoding. Field
+ * 30 is an enum: 0 = challenge code, 1 = button press (the default), 2 = no
+ * press. set_slot() refuses anything above USER_INPUT_NONE, so 8 came back as
+ * "Error invalid user input mode" and read as a firmware fault. Splitting the
+ * enum out of the bitfield is exactly what field 30 exists for (okcore.h), and
+ * four files in this section still spoke the old encoding.
+ */
+const DERIVE_WITHOUT_TOUCH = 2;   // USER_INPUT_NONE
 const NO_PRESS = false;
 
 const LABEL = 'age:personal';
@@ -64,7 +74,7 @@ describe('derived X-Wing, through the web app\'s library', {
     ));
   });
 
-  it('allows derivation without a touch', async ({ device, assert, signal }) => {
+  it('allows derivation without a touch', async ({ device, assert, signal, skip }) => {
     await device.unlock(PINS.primary, { signal });
     await device.enterConfigMode(PINS.primary, { signal });
 
@@ -73,11 +83,16 @@ describe('derived X-Wing, through the web app\'s library', {
       msg: okmsg.MSG.OKSETSLOT,
       slot: 1,
       field: FIELD_DERIVED_KEY_MODE,
-      payload: String(DERIVE_WITHOUT_TOUCH),
+      payload: Buffer.from([DERIVE_WITHOUT_TOUCH]),
     });
 
     const reply = await device.waitHid(IFACE.VENDOR,
       { since, match: /Successfully set|Error/, timeoutMs: 5000, signal });
+    if (/unsupported user input mode/.test(okmsg.text(reply))) {
+      skip('this build has OK_ALLOW_NO_PRESS off, so user-input mode 2 (no press) ' +
+        'is refused by design - onlykey.h ships it commented out and a stale 2 in ' +
+        'EEPROM fails closed to challenge code');
+    }
     assert.ok(!/Error/.test(okmsg.text(reply)),
       `setting the derived-key mode failed: ${okmsg.text(reply)}`);
 
