@@ -13,8 +13,8 @@
  * instead puts it in section 1, which means CI can run it.
  *
  * The rpId is not a free choice: webcryptcheck() admits only apps.crp.to and
- * apps.onlykey.io, and okcrypto_hkdf() binds web-derived ECC keys to whichever
- * one asked. lib/device/tunnel.js explains both and picks the default.
+ * apps.onlykey.io. It does not change derived keys - those have no origin in
+ * them any more. lib/device/tunnel.js explains both and picks the default.
  */
 'use strict';
 

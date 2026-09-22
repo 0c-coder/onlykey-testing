@@ -44,12 +44,12 @@ const session = require('../../lib/gui-session-holder');
  * is an output box that never fills. `localhost` is special-cased by the spec
  * and works. The old kit used it too; this is why.
  *
- * The consequence is the interesting part. The RPID is folded into the
- * derivation - okcrypto_hkdf() reads it where okcrypto.cpp stages it - so a page
- * on localhost derives a DIFFERENT key from one on onlyagent.app, with no error
- * anywhere. The oracle below therefore has to ask for the same rpId the browser
- * will, or the cross-check compares two perfectly correct answers to different
- * questions.
+ * The rpId used to be folded into the derivation - okcrypto_hkdf() v1 read it
+ * out of ctap_buffer - so a page on localhost derived a DIFFERENT key from one
+ * on onlyagent.app, with no error anywhere. v2 (2026-09-22) has no origin in
+ * it, so that is no longer true; the oracle below still asks for the same rpId
+ * the browser will, which costs nothing and keeps this file independent of
+ * that decision. 01-protocol/30-derive-no-origin is what pins it.
  */
 const ORIGIN = 'http://localhost:3000';
 const RP_ID = 'localhost';
