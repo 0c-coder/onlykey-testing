@@ -143,12 +143,6 @@ describe('stored keys, across all six key types', {
     assert.ok(!/^Error/.test(okmsg.text(reply)),
       `setting the stored-key challenge mode failed: ${okmsg.text(reply)}`);
 
-    const primed = device.log.count(PRIMED);
-    since = device.mark(IFACE.VENDOR);
-    device.sendVendor({
-      msg: okmsg.MSG.OKSETPRIV, slot: SLOT, field: keytype | feature, payload: value,
-    });
-
     /*
      * TWO DIFFERENT COMPLETION SIGNALS, and assuming the wrong one is a timeout
      * that names the wait rather than the reason - which is how this file's
@@ -160,20 +154,45 @@ describe('stored keys, across all six key types', {
      * ML-KEM and 1216 for X-Wing. python-onlykey says as much without saying it
      * is different: mlkem_keygen() is documented as "returns 1184-byte pubkey".
      *
-     * The confirmation the keygen raises is covered by the challenge mode set
-     * above - ecc_priv_flash() primes over a packet it builds itself and the
-     * slot is in 101..116, so done_process_packets() loads
-     * stored_key_challenge_mode and a single press answers it, exactly as it
-     * does for a signature.
+     * AND A GENERATED PQC KEY RAISES NO CONFIRMATION AT ALL, which is the
+     * correction that made this pass. It read as a 20-second firmware hang and
+     * it is not one; the two halves that produce it sit in different files:
+     *
+     *   okcore.cpp:456  OKSETPRIV is dispatched only when `configmode == true`
+     *                   (or on first use) - "Only permit loading keys on first
+     *                   use and while in config mode". There is no way to reach
+     *                   a keygen from outside config mode.
+     *   okcore.cpp:5447 `ecc_priv_flash()` gates the PQC keygen challenge on
+     *                   `if (!CRYPTO_AUTH && !configmode)` - in config mode it
+     *                   raises none, deliberately: "config mode IS the presence
+     *                   proof", and the config-mode LED owns the indicator, so a
+     *                   3-button challenge could not be answered there anyway.
+     *
+     * Together those make the challenge branch unreachable in normal operation,
+     * so the keygen answers with the public key and nothing else. This file used
+     * to wait for a prime that the firmware had decided not to send. Driving the
+     * keygen out of config mode to get the challenge does not work either - the
+     * dispatcher drops the message before `ecc_priv_flash()` ever sees it, which
+     * is silent, and was measured here before this comment was written.
+     *
+     * The field-22 write above still matters: it is what covers the confirmation
+     * on the DECAPS side, which is a live challenge and is answered below.
      */
     let generated = null;
     if (generates) {
-      await device.log.waitForCount(PRIMED, primed + 1, { timeoutMs: 20000, signal });
-      device.press(1);
+      since = device.mark(IFACE.VENDOR);
+      device.sendVendor({
+        msg: okmsg.MSG.OKSETPRIV, slot: SLOT, field: keytype | feature, payload: value,
+      });
       generated = await readBack(device, since, generates, { signal, timeoutMs: 40000 });
       assert.equal(generated.length, generates,
         `a generated key should answer with its ${generates}-byte public key`);
     } else {
+      /* Handed over, not generated: stays in config mode and answers with text. */
+      since = device.mark(IFACE.VENDOR);
+      device.sendVendor({
+        msg: okmsg.MSG.OKSETPRIV, slot: SLOT, field: keytype | feature, payload: value,
+      });
       reply = await device.waitHid(IFACE.VENDOR,
         { since, match: /Success|Error/, timeoutMs: 30000, signal });
       assert.ok(!/^Error/.test(okmsg.text(reply)),
