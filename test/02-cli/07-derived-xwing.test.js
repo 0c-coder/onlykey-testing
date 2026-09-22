@@ -4,9 +4,9 @@
  * `03-pqc-decrypt` proves the STORED model: a key generated into slot 101, kept
  * there, and used. This is the other model the plugin supports. Nothing is
  * stored at all - the key is reproduced on demand from (the device's web
- * derivation key, a label, the RPID `onlyagent.app`) - and it is the same key
- * the web app's age-derive page produces, which is what makes CLI and browser
- * interoperable rather than merely similar.
+ * derivation key, a label) with no origin in it (seed/v3) - and it is the same
+ * key the web app's age-derive page produces on any origin, which is what makes
+ * CLI and browser interoperable rather than merely similar.
  *
  * `03-gui/03-xwing-derive` already proves this maths against the device over
  * the CTAP2 vendor bridge. This is the same firmware arithmetic reached the

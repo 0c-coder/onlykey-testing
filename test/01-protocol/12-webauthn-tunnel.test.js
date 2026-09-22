@@ -12,9 +12,9 @@
  * hidapi, so it needed a kernel device node. Riding the kit's own CTAP2 layer
  * instead puts it in section 1, which means CI can run it.
  *
- * The rpId is not a free choice: okcrypto.cpp stages "onlyagent.app" where
- * okcrypto_hkdf() reads it, so everything derived through this path is bound to
- * that origin.
+ * The rpId is not a free choice: webcryptcheck() admits only apps.crp.to and
+ * apps.onlykey.io, and okcrypto_hkdf() binds web-derived ECC keys to whichever
+ * one asked. lib/device/tunnel.js explains both and picks the default.
  */
 'use strict';
 
