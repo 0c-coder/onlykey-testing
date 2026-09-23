@@ -27,12 +27,11 @@
  * restarted between. Defaults are restored in `finally` (21 = 0, 22 = 0,
  * 30 = 1, 31 = 0) over the vendor interface.
  *
- * NOT YET RUN TO COMPLETION (2026-09-23). The section's rig cannot currently
- * load the App: under nw.js 0.114 + Xvfb the app window never leaves
- * document.readyState 'loading', so its load handler never creates
- * myOnlyKey and every 04-app test that needs the device (14 included) fails
- * in waitForDevice. Upstream OnlyKey-App b8918ce does the same, so it is the
- * rig, not the App change. See TODO.md.
+ * RUN IT UNDER THE nw.js THE APP SHIPS WITH (0.71.x): OKT_NW_BINARY pointing
+ * at an nwjs-sdk-v0.71.1 `nw`. Under nw.js 0.114 the App's window never leaves
+ * document.readyState 'loading', its load handler never creates myOnlyKey,
+ * and every 04-app test that needs the device fails in waitForDevice - for
+ * upstream OnlyKey-App too. See TODO.md.
  */
 'use strict';
 
@@ -178,6 +177,21 @@ describe('App: user input modes and Webcrypt access', {
         await device.restart({ signal });
         await device.ensureUnlocked(PINS.primary, { signal });
 
+        /* Open the CTAPHID channel FIRST, before any vendor traffic of our own.
+         * The first FIDO packet after an unlock is where the firmware picks the
+         * interface FIDO answers go out on (okcore.cpp, the `!useinterface`
+         * Android workaround): it waits 100 ms, reads ONE MORE report from any
+         * interface, and if there is one it replaces the FIDO packet with it
+         * and answers on that report's interface. With the App open, the App
+         * answers our decapsulation reply with vendor traffic of its own, and
+         * an INIT sent right after it was replaced by the App's packet and
+         * never answered (measured 2026-09-23: lost in all 7 runs that sent it
+         * right after the decap, answered in every run that sent it first or
+         * 5 s later). See the FINDING in TODO.md. */
+        const ctap = new Ctap2(device, { signal });
+        await ctap.init();
+        log('CTAPHID channel open');
+
         /* Field 30 = none: decapsulation answers without a press. */
         let since = device.mark(IFACE.VENDOR);
         for (let off = 0; off < PAYLOAD.length; off += 57) {
@@ -189,13 +203,12 @@ describe('App: user input modes and Webcrypt access', {
           { since, match: (b) => okmsg.text(b) !== 'INITIALIZED', timeoutMs: 8000, signal })
           .catch(() => null);
         const said = reply ? okmsg.text(reply) : '(nothing within 8 s)';
+        log(`derived decapsulation answered: ${reply ? `${reply.length} bytes, "${said.slice(0, 40)}"` : said}`);
         assert.ok(reply && !/^(Error|Timeout)/.test(said),
           `with "No confirmation" chosen in the App, a derived decapsulation did not answer ` +
           `unattended: ${said}`);
 
         /* Field 31 bit 0: a trusted origin's stored-slot OKSIGN is not refused. */
-        const ctap = new Ctap2(device, { signal });
-        await ctap.init();
         if (await handshake(ctap, 'example.com', { signal })) {
           log('this build admits an untrusted origin (DEBUG trust-all): the policy effect cannot be seen here');
           return;

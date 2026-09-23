@@ -2074,14 +2074,41 @@ it). The firmware sends in order. Suspect the device-host's back-pressure when
 nothing drains the gadget node. Until fixed, anything longer than ~9 reports
 should be read through the node (15 now uses the plugin for the recipient).
 
-## 04-app: the App window never finishes loading (2026-09-23)
+## 04-app: run the App under nw.js 0.71, not 0.114 (2026-09-23)
 
-`10-session` passes, but any test that waits for the device fails with
-`{conn: null, init: false}`: `myOnlyKey` is undefined because the page is
-still at `document.readyState === 'loading'` - every script tag is in the DOM,
-`load` never fires, so `init()` never runs. Same with upstream OnlyKey-App
-`b8918ce`, so it is the rig (nw.js 0.114 under Xvfb in the colima VM), not
-the App. `04-app/17-app-input-modes-and-webcrypt` is written and waiting on it.
+Under the kit's nw.js 0.114 SDK, `10-session` passes but any test that waits
+for the device fails with `{conn: null, init: false}`: the page stays at
+`document.readyState === 'loading'` (every script has run - `dialogMgr`, the
+last script's const, exists - but parsing never ends), `load` never fires,
+so `init()` never runs. Same with upstream OnlyKey-App `b8918ce`.
+
+Under nwjs-sdk-v0.71.1 - the line the App's own package.json pins
+(`"nw": "^0.71.1"`) - it loads normally and `14` and `17` pass:
+
+    OKT_NW_BINARY=/opt/ok/nw71/nwjs-sdk-v0.71.1-linux-x64/nw DISPLAY=:99 \
+      node bin/okt.js run test/04-app/10-session.test.js ... test/04-app/19-stop.test.js
+
+TODO: make lib/gui.js findNw() prefer an SDK matching the App's pinned nw
+for section 4 (section 3 can stay on 0.114), and find out what 0.114 is
+waiting on - the App will have to move off 0.71 eventually.
+
+## FINDING: the first FIDO packet after unlock can be swallowed by vendor traffic (2026-09-23)
+
+okcore.cpp, the `!useinterface` branch (an Android workaround): on the first
+FIDO packet after unlock the firmware waits 100 ms, calls `RawHID.recv()`
+once more, and if ANY report arrived meanwhile - on any interface - it
+OVERWRITES the FIDO packet with it and sets `useinterface` to that report's
+interface, so FIDO answers then go out on that interface. With the OnlyKey
+App open, the App sends vendor traffic in reply to other vendor traffic; a
+CTAPHID INIT sent right after a derived decapsulation was replaced by the
+App's packet and never answered, in all 7 runs. Sent first, or 5 s later, it
+was answered every time. The console shows the swallowed report parsed as
+CTAPHID (`Recv packet` ... `length`, then no `adding a new cid`).
+
+Pre-existing (not a v3.0.5 change). On hardware it means: App open + a FIDO
+client's very first request after unlock can be lost; browsers retry INIT, so
+it is probably invisible there, but anything that sends one INIT and waits
+would hang. `17` now opens its CTAPHID channel before its vendor traffic.
 
 ## Rig: the gadget's UDC file must be writable by the kit's user
 
