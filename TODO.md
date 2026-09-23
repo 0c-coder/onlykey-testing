@@ -2073,3 +2073,20 @@ reading the kernel hidraw node gets it in order (and `02-cli/07` decrypts to
 it). The firmware sends in order. Suspect the device-host's back-pressure when
 nothing drains the gadget node. Until fixed, anything longer than ~9 reports
 should be read through the node (15 now uses the plugin for the recipient).
+
+## 04-app: the App window never finishes loading (2026-09-23)
+
+`10-session` passes, but any test that waits for the device fails with
+`{conn: null, init: false}`: `myOnlyKey` is undefined because the page is
+still at `document.readyState === 'loading'` - every script tag is in the DOM,
+`load` never fires, so `init()` never runs. Same with upstream OnlyKey-App
+`b8918ce`, so it is the rig (nw.js 0.114 under Xvfb in the colima VM), not
+the App. `04-app/17-app-input-modes-and-webcrypt` is written and waiting on it.
+
+## Rig: the gadget's UDC file must be writable by the kit's user
+
+After a VM restart the gadget's UDC file in configfs came back owned by root
+with mode 0644, so the device host could not unbind the gadget and
+`02-cli/04-pqc-no-device` failed at "takes the device off the bus". With the
+file owned by the kit's user it passes 5/5. The setup script should set that
+on every boot.
