@@ -201,7 +201,27 @@ describe('the trusted-origin gate and the webcrypt policy', {
         `${TRUSTED_ALT} was refused - the second origin table entry does not match`);
     });
 
-  it('a trusted origin gets DERIVED keys only until field 31 bit 0 is set',
+  it('a key that never wrote field 31 allows stored-slot operations, as v3.0.4 did',
+    async ({ device, assert, signal, log, skip }) => {
+      /*
+       * Decided 2026-09-23: keys upgraded from v3.0.4 keep web PGP, which that
+       * firmware allowed by default. An unwritten field 31 reads OKWC_UNSET and
+       * okcore_webcrypt_policy() answers ALLOW_STORED_KEY. Runs before any test
+       * in this file writes field 31 - the fixture never writes it.
+       */
+      await device.ensureUnlocked(PINS.primary, { signal });
+      const { ctap } = await enforcing(device, { signal, skip, assert, log });
+      const { session, model, why } = await handshake(device, ctap, TRUSTED, { signal });
+      assert.control('the trusted origin completes the handshake', !!session && /UNLOCKED/.test(model || ''));
+      if (!session) throw new Error(`handshake from ${TRUSTED} failed: ${why}`);
+
+      const { fido, vendor, said } = await trySign(device, ctap, session, { signal });
+      log(`FIDO answer: ${fido}; vendor: ${vendor || '(nothing)'}`);
+      assert.absent(!REFUSED.test(said),
+        'a never-configured key refused a stored-slot request - upgraded v3.0.4 keys would lose web PGP');
+    });
+
+  it('a trusted origin gets DERIVED keys only once field 31 is written without bit 0',
     async ({ device, assert, signal, log, skip }) => {
       await device.ensureUnlocked(PINS.primary, { signal });
       await enforcing(device, { signal, skip, assert, log });
@@ -220,8 +240,8 @@ describe('the trusted-origin gate and the webcrypt policy', {
       const { fido, vendor, said } = await trySign(device, ctap, session, { signal });
       log(`FIDO answer: ${fido}; vendor: ${vendor || '(nothing)'}`);
       assert.match(fido, REFUSED,
-        'a stored-slot OKSIGN was NOT refused to the browser at the default policy - "derived keys ' +
-        'yes, PGP no" is the documented default, and bit 0 is what changes it');
+        'a stored-slot OKSIGN was NOT refused to the browser at policy 0 - "derived keys ' +
+        'yes, PGP no" is what 0 means, and bit 0 is what changes it');
     });
 
   it('field 31 bit 0 promotes the same origin to stored-slot operations',
