@@ -1,15 +1,43 @@
 # Finding: loading a 4096-bit RSA key writes one byte past `rsa_private_key`
 
-**Status:** **FIXED.** Measured on the emulator, deterministic, against
-`libraries@83353cf`; closed by `libraries@b6ca21c` on branch `rsa-fix`
-(`bm-ok/0c-coder-libraries`), which is pending upstream. The reproducer below
-now passes rather than aborting, and its env-var gate is gone.
-**Severity:** out-of-bounds WRITE, reachable from an ordinary client
-(`onlykey-cli loadkey` with any 4096-bit RSA key) - but **post-PIN**. The
-device has to be unlocked and in config mode before it will accept a key at
-all, so this is not a pre-auth surface, and the earlier wording here
-("reachable from a normal client", unqualified) overstated it. Still higher
-than the slot-tail finding, which is read-only exposure at rest.
+**Status: FIXED.** `libraries:merge/user-input-modes-pqc` clamps the ninth copy
+to `MAX_RSA_KEY_SIZE - packet_buffer_offset`. Verified on the emulator
+2026-09-22: a 4096-bit key loads, the device survives, and the modulus read back
+out of flash after a reboot equals `p*q` byte for byte - so the clamp is
+lossless as well as safe (8 x 57 + a clamped 56 = exactly 512; the dropped byte
+is the host's padding in the ninth report).
+
+The regression test moved with the fix. `01-protocol/25-rsa4096-overflow.test.js`
+asserted the device CRASHES and so went red the day the clamp landed; it is
+replaced by `01-protocol/25-rsa4096-load.test.js`, which asserts the key loads
+INTACT. That file's modulus check is the one that matters and it was proved
+against a deliberately narrowed clamp (`room - 1`): the load still reported
+`Successfully set RSA Key`, the device still survived, and only the modulus
+comparison caught it - `differs at byte 254 of 512`. A survival-only test would
+have passed.
+
+`23-rsa-tunnel`'s 4096 case is ungated and `OKT_EXPECT_RSA4096_FIX` is gone -
+but ungating alone did not make it pass, and what it uncovered is worth its own
+line: every test in that file was failing on transit v2, not on the key size.
+The kit's tunnel client was still speaking the old length-preserving box, so the
+firmware discarded each request whole and the host waited out a 30-second
+timeout with nothing to attribute it to. `lib/device/transit.js` now seals and
+opens `[counter(4)][ciphertext][tag(16)]`, request chunks are 171 bytes
+(245 - 20 framing, rounded down to a multiple of 57) and the file is green. The
+framing also moved the boundary the file was written for, in its favour: a
+512-byte RSA-4096 signature is staged as 532 and served in TWO chunks, so
+RSA-4096 is now the smallest classic response that exercises the multi-chunk
+path the alpha report pointed at, with RSA-2048 (276 framed) as the one-chunk
+control beside it.
+
+Both files stay gated `emulated`, because a key running firmware WITHOUT the
+clamp is still a key this drives an out-of-bounds write at, with no
+`_FORTIFY_SOURCE` to catch it.
+
+**Originally:** measured on the emulator, deterministic, `libraries@83353cf`.
+**Severity:** out-of-bounds WRITE, reachable from a normal client
+(`onlykey-cli loadkey` with any 4096-bit RSA key). Higher than the slot-tail
+finding, which is read-only exposure at rest.
 **Found by:** driving the RSA-4096 response boundary in `onlykey-testing`. The
 emulator did the work here: `_FORTIFY_SOURCE` turns a silent one-byte corruption
 into a loud abort, so this is a defect a physical key would not have surfaced.
@@ -183,53 +211,29 @@ build's ordering is its own question - the Teensy build's map file would settle
 it. If something live sits there instead of a scratch buffer, the severity goes
 back up.
 
-## The fix, as applied
+## Suggested fix
 
-`libraries@b6ca21c`, branch `rsa-fix`. The copy is clamped to what remains, in
-all five branches rather than only type 4 - the other four are safe by
-arithmetic that a future key size would break again, and a reviewer can check
-one idea applied five times instead of verifying by hand that types 1-3 and the
-PQC blob end at 171, 285, 399 and 171 inside a 512-byte array:
+Clamp the copy to what remains, in all five branches rather than only type 4 -
+the other four are safe by arithmetic that a future key size would break again:
 
 ```c
-int chunk = keysize - packet_buffer_offset;
-if (chunk > 57)
-    chunk = 57;
-memcpy(rsa_private_key + packet_buffer_offset, buffer + 7, chunk);
-packet_buffer_offset = packet_buffer_offset + chunk;
+int n = keysize - packet_buffer_offset;
+if (n > 57) n = 57;
+if (n > 0) memcpy(rsa_private_key + packet_buffer_offset, buffer + 7, n);
 ```
 
-Two things this finding suggested were deliberately **not** done, because the
-change is a security fix that a maintainer has to audit line by line and
-anything that is not load-bearing costs him attention:
-
-- The `if (n > 0)` guard. With the surrounding `packet_buffer_offset <= N`
-  guard still in place, `chunk` cannot reach zero or below.
-- Rewriting `packet_buffer_offset <= 456` as `< keysize`. It would say what it
-  means, but the clamp already makes the existing guard sufficient, so it is a
-  readability change and belongs in its own commit.
-
-**It cannot be shipped without the slot-tail fix.** What bounded the residue in
-`FINDING-rsa-slot-tail.md` was this defect's own padding: clamping the copy
-removes that padding and would widen the leak from 85 bytes to 384. The clamp
-and the `memset` are one commit for that reason.
+The guard `packet_buffer_offset <= 456` can then be `< keysize`, which says what
+it means: keep going while there is room.
 
 ## Reproducing
 
 ```sh
 sudo sysctl -w vm.mmap_min_addr=4096
-node bin/okt.js run test/01-protocol/25-rsa4096-overflow.test.js
-node bin/okt.js run test/01-protocol/23-rsa-tunnel.test.js
+node bin/okt.js run test/01-protocol/23-rsa-tunnel.test.js --test 4096
 ```
 
-Against the fixed firmware both pass: nine chunks load, the host survives, and
-slot 2 publishes its own 4096-bit modulus. `23-rsa-tunnel`'s 4096-bit case used
-to be held off by `OKT_EXPECT_RSA4096_FIX=yes`; that gate is removed. It is
-still gated on the `emulated` capability, for a reason that has changed - see
-the comment in that file.
-
-Against the UNFIXED firmware the run aborts with exit code 5 and
-`*** buffer overflow detected ***` in the device host's stderr. Note the exit
-code: SIGABRT is classified as "the device host died for a reason that is not
-the firmware's fault", which is wrong for a fortify trip - tracked separately in
-the kit's TODO and untouched by this fix.
+The run aborts with exit code 5 and `*** buffer overflow detected ***` in the
+device host's stderr, attached to the failing test. Note the exit code: SIGABRT
+is currently classified as "the device host died for a reason that is not the
+firmware's fault", which is wrong for a fortify trip - tracked separately in the
+kit's TODO.

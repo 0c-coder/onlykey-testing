@@ -311,10 +311,14 @@ describe('onlykey-gpg, initialising a GnuPG identity', {
        * framing bug from "the device kept refusing my confirmation" into a
        * sentence naming which side is wrong.
        *
-       * lib-agent prints the triple on its own line, right after the "Enter the
-       * 3 digit challenge code" line, once per signature.
+       * lib-agent prints the triple once per signature. It used to be alone on
+       * the line after "Enter the 3 digit challenge code"; since the press-mode
+       * work it is inline - "Confirm on OnlyKey to authorize <id>: press any
+       * button, or enter 5 4 2 if derivedkeymode/storedkeymode is 0" - because
+       * the host cannot tell which mode the key is in. Both forms are accepted.
        */
-      const printed = [...init.stdout.matchAll(/^\s*([1-6]) ([1-6]) ([1-6])\s*$/gm)]
+      const printed = [...init.stdout.matchAll(
+        /(?:^\s*|\benter )([1-6]) ([1-6]) ([1-6])(?=\s*$|\s+if\b)/gm)]
         .map((m) => [Number(m[1]), Number(m[2]), Number(m[3])]);
 
       log(`lib-agent printed ${JSON.stringify(printed)}`);

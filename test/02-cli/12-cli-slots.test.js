@@ -23,7 +23,7 @@
  * writable only in config mode, and the firmware says so twice, inconsistently:
  *
  *   OKSETPRIV  (setkey, genkey, setpqc)  "Error not in config mode"
- *   OKWIPEPRIV (wipekey)                 "Error device locked"
+ *   OKWIPEPRIV (wipekey)                 "Error not in config mode" (was "Error device locked")
  *
  * The second is misleading - the device is unlocked, it is simply not in config
  * mode - and it is asserted here in the firmware's own wording rather than
@@ -275,7 +275,7 @@ describe('onlykey-cli, the slot and key endpoints', {
         'the 0xFF generate trigger was stored as the key itself');
     });
 
-  it('`wipekey` is refused outside config mode, in the firmware\'s own misleading words',
+  it('`wipekey` is refused outside config mode, and leaves the label alone',
     async ({ device, assert, signal, skip }) => {
       needCli({ skip });
       await outOfConfigMode(device, signal);
@@ -283,26 +283,26 @@ describe('onlykey-cli, the slot and key endpoints', {
       /*
        * SURFACE: vendor - survives into a production walk.
        *
-       * "Error device locked" for a device that is unlocked. OKWIPEPRIV has no
-       * config-mode branch of its own in okcore.cpp and falls through to a
-       * shared else, so the same condition its neighbour reports as "Error not
-       * in config mode" arrives here as a lock error. Asserted as it ships:
-       * a test expecting the sensible message would fail against every device
-       * in the field, and this way the wording is pinned so that CHANGING it is
-       * what shows up as a failure.
+       * This pinned two things as they shipped, and both have since been fixed,
+       * so both assertions are now the fixed behaviour:
+       *
+       * 1. The refusal used to read "Error device locked" for a device that
+       *    was unlocked - OKWIPEPRIV fell through to a shared else. The
+       *    firmware now names config mode ("Tell OKWIPEPRIV to name config
+       *    mode when it refuses", libraries).
+       * 2. python-onlykey's wipekey() then cleared the key's LABEL with an
+       *    OKSETSLOT, which is not gated, so after a refused wipe the key stayed
+       *    and lost its label, and the last line printed was "Successfully set
+       *    Label". Fixed in python-onlykey 5520453: no label clear after an
+       *    error. replies: 2 still waits long enough to see a second message if
+       *    that regresses.
        */
       const refused = await sent(device, ['wipekey', 'ECC1'], { signal, replies: 2 });
-      assert.equal(refused.said[0], 'Error device locked',
+      assert.equal(refused.said[0], 'Error not in config mode',
         `outside config mode the device answered: ${JSON.stringify(refused.said)}`);
-
-      /*
-       * Two messages, not one, and the second is the surprise: python-onlykey's
-       * wipekey() also clears the key's LABEL with an OKSETSLOT, which is not
-       * gated, so it succeeds while the wipe itself was refused. A client
-       * reading only the last line would conclude the key was wiped.
-       */
-      assert.equal(refused.said[1], 'Successfully set Label',
-        `expected the label clear to follow the refusal, got ${JSON.stringify(refused.said)}`);
+      assert.equal(refused.said.length, 1,
+        `a refused wipe was followed by ${JSON.stringify(refused.said.slice(1))} - ` +
+        'wipekey() cleared the label of a key that is still on the device');
 
       /* And in config mode it does the thing. */
       await pqc.readyForKeygen(device, { signal });
@@ -311,7 +311,7 @@ describe('onlykey-cli, the slot and key endpoints', {
         `in config mode the device answered: ${JSON.stringify(wiped.said)}`);
     });
 
-  it('`setpqc` reports the refusal rather than claiming success',
+  it('`setkey PQC1 p` reports the refusal rather than claiming success',
     async ({ device, assert, signal, log, skip }) => {
       needCli({ skip });
       await outOfConfigMode(device, signal);
@@ -336,12 +336,17 @@ describe('onlykey-cli, the slot and key endpoints', {
        * raises on a refusal, and setpqc/loadpqc exit non-zero. See FINDINGS.md
        * #10.
        *
+       * python-onlykey 1.3.0 then deleted setpqc; `setkey PQCn p` is its
+       * replacement, and its first version printed only the exception class
+       * and exited 0 on a refusal (fixed in python-onlykey f4a6031). Same
+       * assertions, new command.
+       *
        * The device half of the assertion is unchanged and still matters: it is
        * what proves the CLI is relaying a real refusal rather than failing for
        * some reason of its own.
        */
       const blob = '00'.repeat(160);
-      const { result, said } = await sent(device, ['setpqc', 'RSA1', blob], { signal, replies: 3 });
+      const { result, said } = await sent(device, ['setkey', 'PQC1', 'p', blob], { signal, replies: 3 });
 
       log(`device said: ${JSON.stringify(said)}`);
       log(`CLI said: ${JSON.stringify(result.stdout.trim())}`);
@@ -349,11 +354,11 @@ describe('onlykey-cli, the slot and key endpoints', {
       assert.ok(said.length > 0 && said.every((s) => s === 'Error not in config mode'),
         `expected the device to refuse every chunk, got ${JSON.stringify(said)}`);
       assert.notEqual(result.code, 0,
-        'setpqc exited 0 for a load the device refused three times');
+        'setkey p exited 0 for a load the device refused three times');
       assert.includes(result.stdout, 'not in config mode',
-        'setpqc did not relay the device\'s reason for refusing');
+        'setkey p did not relay the device\'s reason for refusing');
       assert.ok(!/Loaded composite PQC PGP key/.test(result.stdout),
-        'setpqc still claims to have loaded a key the device refused');
+        'setkey p still claims to have loaded a key the device refused');
     });
 
   it('`loadpqc` refuses a file it cannot read, without touching the device',

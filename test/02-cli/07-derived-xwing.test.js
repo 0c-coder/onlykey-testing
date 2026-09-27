@@ -4,9 +4,9 @@
  * `03-pqc-decrypt` proves the STORED model: a key generated into slot 101, kept
  * there, and used. This is the other model the plugin supports. Nothing is
  * stored at all - the key is reproduced on demand from (the device's web
- * derivation key, a label, the RPID `onlyagent.app`) - and it is the same key
- * the web app's age-derive page produces, which is what makes CLI and browser
- * interoperable rather than merely similar.
+ * derivation key, a label) with no origin in it (seed/v3) - and it is the same
+ * key the web app's age-derive page produces on any origin, which is what makes
+ * CLI and browser interoperable rather than merely similar.
  *
  * `03-gui/03-xwing-derive` already proves this maths against the device over
  * the CTAP2 vendor bridge. This is the same firmware arithmetic reached the
@@ -48,6 +48,41 @@ const { describe, it } = require('../../lib/harness');
 const { PINS } = require('../../lib/config');
 const cli = require('../../lib/cli');
 const pqc = require('../../lib/pqc');
+const { IFACE, okmsg } = require('../../lib/device');
+
+/* Field 30, the user input mode for slot 128 (web-and-agent derived keys) on
+ * both transports. Press is the default; "none" is honoured on every build for
+ * this slot - it is the unattended-agent setting. */
+const FIELD_WEB_AGENT_DERIVE_MODE = 30;
+const USER_INPUT_PRESS = 1;
+const USER_INPUT_NONE = 2;
+
+/** Write field 30 in config mode, leave config mode, and return the answer. */
+async function setDeriveMode(device, value, { signal }) {
+  await pqc.readyForKeygen(device, { signal });
+  const since = device.mark(IFACE.VENDOR);
+  device.sendVendor({
+    msg: okmsg.MSG.OKSETSLOT, slot: 1, field: FIELD_WEB_AGENT_DERIVE_MODE,
+    payload: Buffer.from([value]),
+  });
+  const ack = await device.waitHid(IFACE.VENDOR,
+    { since, match: /Success|Error/, timeoutMs: 8000, signal });
+  const said = okmsg.text(ack).trim();
+  await device.restart({ signal });
+  await device.ensureUnlocked(PINS.primary, { signal });
+  return said;
+}
+
+/** Run `work` with field 30 set to no-press, and put the default back. */
+async function withoutPress(device, assert, work, { signal }) {
+  const set = await setDeriveMode(device, USER_INPUT_NONE, { signal });
+  assert.match(set, /^Success/, `setting field 30 to no-press: ${set}`);
+  try {
+    return await work();
+  } finally {
+    await setDeriveMode(device, USER_INPUT_PRESS, { signal });
+  }
+}
 
 /* The device's own announcement that it has primed a confirmation challenge -
  * the same marker 03-pqc-decrypt watches. Nothing here may cause it. */
@@ -173,22 +208,27 @@ describe('derived X-Wing from the command line', {
       /*
        * The whole round trip closes here, and it is deliberately run WITHOUT
        * any challenge answering: `age` is spawned raw rather than through
-       * pqc.decrypt(). If the device demanded a confirmation this would hang
-       * until the deadline - so the assertion below turns that into a sentence
-       * instead, and the byte comparison is what proves the derivation
-       * reproduced the same key the recipient was built from.
+       * pqc.decrypt(). Derived decapsulation asks for confirmation by default
+       * (field 30 = press, since the 2026-09 firmware), so this runs with field
+       * 30 set to "none" - the unattended-agent setting, honoured on every
+       * build for slot 128 - and puts the default back afterwards. Under the
+       * default the plugin prints the prompt and the device answers "Timeout
+       * occured while waiting for confirmation" after 20 s (measured
+       * 2026-09-22), which is the design, not a failure of the round trip.
        *
-       * The decapsulation request is the multi-packet one: label tag (32) plus
-       * ct_X (32) is 64 bytes over a 57-byte report. A shared secret that comes
-       * back wrong rather than absent is the signature of that framing bug, and
-       * it presents as `age` failing with "no identity matched any of the
-       * recipients" - which blames the identity file.
+       * The byte comparison is what proves the derivation reproduced the same
+       * key the recipient was built from. The decapsulation request is the
+       * chunked one: [label32 | ct 1120] = 1152 bytes = 20 x 57 + 12. A shared
+       * secret that comes back wrong rather than absent is the signature of a
+       * framing bug, and it presents as `age` failing with "no identity
+       * matched any of the recipients" - which blames the identity file.
        */
       const primed = device.log.count(PRIMED);
 
-      const result = await cli.run('age',
+      const result = await withoutPress(device, assert, () => cli.run('age',
         ['-d', '-i', at('identity.txt'), '-o', at('decrypted.txt'), at('secret.age')],
-        { timeoutMs: 90000, signal, env: { PATH: `${cli.VENV_BIN}:${process.env.PATH}` } });
+        { timeoutMs: 90000, signal, env: { PATH: `${cli.VENV_BIN}:${process.env.PATH}` } }),
+      { signal });
 
       assert.equal(result.code, 0, `age -d exited ${result.code}: ${result.stderr}`);
       assert.ok(fs.existsSync(at('decrypted.txt')), 'age -d produced no output file');
@@ -216,9 +256,12 @@ describe('derived X-Wing from the command line', {
       fs.writeFileSync(at('other-identity.txt'),
         `${other.stdout.split('\n').find((l) => l.startsWith('AGE-PLUGIN-ONLYKEY-1')).trim()}\n`);
 
-      const result = await cli.run('age',
+      /* Without a press too, so a refusal here is the wrong key failing to
+       * decapsulate and not a confirmation nobody gave timing out. */
+      const result = await withoutPress(device, assert, () => cli.run('age',
         ['-d', '-i', at('other-identity.txt'), '-o', at('nope.txt'), at('secret.age')],
-        { timeoutMs: 90000, signal, env: { PATH: `${cli.VENV_BIN}:${process.env.PATH}` } });
+        { timeoutMs: 90000, signal, env: { PATH: `${cli.VENV_BIN}:${process.env.PATH}` } }),
+      { signal });
 
       assert.notEqual(result.code, 0, `age decrypted with ${OTHER}'s identity`);
       assert.ok(!fs.existsSync(at('nope.txt')), 'age wrote output for a decryption that failed');

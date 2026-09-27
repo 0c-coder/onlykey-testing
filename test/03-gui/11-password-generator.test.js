@@ -44,12 +44,12 @@ const session = require('../../lib/gui-session-holder');
  * is an output box that never fills. `localhost` is special-cased by the spec
  * and works. The old kit used it too; this is why.
  *
- * The consequence is the interesting part. The RPID is folded into the
- * derivation - okcrypto_hkdf() reads it where okcrypto.cpp stages it - so a page
- * on localhost derives a DIFFERENT key from one on onlyagent.app, with no error
- * anywhere. The oracle below therefore has to ask for the same rpId the browser
- * will, or the cross-check compares two perfectly correct answers to different
- * questions.
+ * The rpId used to be folded into the derivation - okcrypto_hkdf() v1 read it
+ * out of ctap_buffer - so a page on localhost derived a DIFFERENT key from one
+ * on onlyagent.app, with no error anywhere. v2 (2026-09-22) has no origin in
+ * it, so that is no longer true; the oracle below still asks for the same rpId
+ * the browser will, which costs nothing and keeps this file independent of
+ * that decision. 01-protocol/30-derive-no-origin is what pins it.
  */
 const ORIGIN = 'http://localhost:3000';
 const RP_ID = 'localhost';
@@ -58,7 +58,17 @@ const PAGE = `${ORIGIN}/app/password-generator`;
 /* See 02-derive: without this the device refuses a touch-free derivation, and
  * says so as CTAP2_ERR_EXTENSION_NOT_SUPPORTED. */
 const FIELD_DERIVED_KEY_MODE = 21;
-const DERIVE_WITHOUT_TOUCH = 8;
+/*
+ * USER_INPUT_NONE, not a bit.
+ *
+ * This was 8 - "bit 3" - which is the LEGACY field-21 bitfield encoding. Field
+ * 30 is an enum: 0 = challenge code, 1 = button press (the default), 2 = no
+ * press. set_slot() refuses anything above USER_INPUT_NONE, so 8 came back as
+ * "Error invalid user input mode" and read as a firmware fault. Splitting the
+ * enum out of the bitfield is exactly what field 30 exists for (okcore.h), and
+ * four files in this section still spoke the old encoding.
+ */
+const DERIVE_WITHOUT_TOUCH = 2;   // USER_INPUT_NONE
 
 const KEYTYPE_P256R1 = 1;
 const PHRASE = 'kit-test-site.example';
@@ -72,7 +82,7 @@ describe('the password-generator page', {
   let expected = null;
 
   it('unlocks the device before anything opens a page',
-    async ({ device, assert, signal }) => {
+    async ({ device, assert, signal, skip }) => {
       /*
        * A visible step, and the first one deliberately: everything after it
        * depends on the device being unlocked, and the failure it prevents is
@@ -86,10 +96,15 @@ describe('the password-generator page', {
         msg: okmsg.MSG.OKSETSLOT,
         slot: 1,
         field: FIELD_DERIVED_KEY_MODE,
-        payload: String(DERIVE_WITHOUT_TOUCH),
+        payload: Buffer.from([DERIVE_WITHOUT_TOUCH]),
       });
       const reply = await device.waitHid(IFACE.VENDOR,
         { since, match: /Successfully set|Error/, timeoutMs: 5000, signal });
+      if (/unsupported user input mode/.test(okmsg.text(reply))) {
+        skip('this build has OK_ALLOW_NO_PRESS off, so user-input mode 2 (no press) ' +
+          'is refused by design - onlykey.h ships it commented out and a stale 2 in ' +
+          'EEPROM fails closed to challenge code');
+      }
       assert.ok(!/Error/.test(okmsg.text(reply)),
         `setting the derived-key mode failed: ${okmsg.text(reply)}`);
 
