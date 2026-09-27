@@ -9,7 +9,7 @@
  * command line loaded.
  *
  * It sits in section 2 rather than section 3's headless tier for one reason:
- * loading the key needs `onlykey-cli setpqc`, and therefore a kernel device
+ * loading the key needs `onlykey-cli loadpqc`, and therefore a kernel device
  * node. That is section 2's admission test, and it does not stop being true
  * because the client under test happens to be the browser's. The headless tier
  * stays CI-able precisely by keeping files like this out of it.
@@ -38,11 +38,10 @@ const crypto = require('crypto');
 
 const { describe, it } = require('../../lib/harness');
 const { PINS } = require('../../lib/config');
-const cli = require('../../lib/cli');
 const pqc = require('../../lib/pqc');
 const webenv = require('../../lib/webenv');
 
-const SLOT_NAME = 'RSA1';
+const SLOT_NAME = 'PQC1';   /* the CLI's name for RSA slot 1 when it holds a composite key */
 const SLOT_ID = 1;
 const HALF_ECC = 0;
 
@@ -70,10 +69,10 @@ describe('composite operations, through the web app\'s library', {
   it('loads a composite key with the CLI', async ({ device, assert, signal, log }) => {
     composite = webenv.loadPlain('composite_pgp.js');
     openpgp = webenv.openpgp();
-    const generated = await composite.generateCompositeKey(openpgp, {
-      userId: { name: 'Kit', email: 'kit@example.com' },
-    });
-    blob = Buffer.from(generated.blob);
+    /* compositeKey() is the web app's generator plus the armored private key
+     * loadpqc needs - see lib/pqc.js. */
+    const generated = await pqc.compositeKey(openpgp, composite);
+    blob = generated.blob;
     armored = generated.armoredPublicKey;
 
     const { ed25519 } = require('@noble/curves/ed25519.js');
@@ -85,9 +84,9 @@ describe('composite operations, through the web app\'s library', {
     await device.unlock(PINS.primary, { signal });
     await device.enterConfigMode(PINS.primary, { signal });
 
-    const result = await cli.run('onlykey-cli',
-      ['setpqc', SLOT_NAME, blob.toString('hex')], { timeoutMs: 60000, signal });
-    assert.equal(result.code, 0, `setpqc failed: ${result.stderr || result.stdout}`);
+    const result = await pqc.loadWithCli(generated.armoredPrivateKey,
+      { slot: SLOT_NAME, timeoutMs: 60000, signal });
+    assert.equal(result.code, 0, `loadpqc failed: ${result.stderr || result.stdout}`);
 
     /* Out of config mode: OKSIGN and OKDECRYPT are not on its allow-list. */
     await device.restart({ signal });

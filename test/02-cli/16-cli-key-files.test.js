@@ -95,31 +95,17 @@ describe('onlykey-cli, loading keys from PGP files', {
    * same call it makes, keeps the private key, and packs the blob with the same
    * `packBlob()`. Doing it this way rather than reimplementing the offsets is
    * what keeps this test about the FILE PARSE rather than about the layout,
-   * which `03-gui/05-composite-blob` already owns.
+   * which `03-gui/05-composite-blob` already owns. That logic now lives in
+   * lib/pqc.js compositeKey(), shared with 05, 06, 12 and 17, which needed the
+   * same private file once setpqc was deleted.
    */
   async function compositeKeyFile(name) {
-    const openpgp = webenv.openpgp();
-    const cp = webenv.loadPlain('composite_pgp.js');
-
-    openpgp.clearHardwareHooks();
-    const { privateKey, publicKey } = await openpgp.generateKey({
-      type: 'pqc',
-      userIDs: [USER],
-      subkeys: [{}],
-      format: 'object',
-      config: { v6Keys: true },
-    });
-
-    const primary = privateKey.keyPacket.privateParams;
-    const sub = privateKey.subkeys[0].keyPacket.privateParams;
-    const blob = Buffer.from(cp.packBlob(
-      primary.eccSecretKey, primary.mldsaSeed, sub.eccSecretKey, sub.mlkemSeed
-    ));
-
+    const key = await pqc.compositeKey(webenv.openpgp(),
+      webenv.loadPlain('composite_pgp.js'), { userId: USER });
     return {
-      file: write(name, await privateKey.armor()),
-      armoredPublic: await publicKey.armor(),
-      blob,
+      file: write(name, key.armoredPrivateKey),
+      armoredPublic: key.armoredPublicKey,
+      blob: key.blob,
     };
   }
 
@@ -168,7 +154,9 @@ describe('onlykey-cli, loading keys from PGP files', {
 
       const since = device.mark(IFACE.VENDOR);
       const result = await cli.run('onlykey-cli',
-        ['loadpqc', key.file, 'RSA1'], { timeoutMs: 120000, signal });
+        /* PQC1, not RSA1: the CLI names composite slots PQC1-PQC4 only and
+         * refuses RSA names for them (python-onlykey's loadpqc). */
+        ['loadpqc', key.file, 'PQC1'], { timeoutMs: 120000, signal });
 
       assert.equal(result.code, 0,
         `loadpqc failed: ${result.stderr || result.stdout}`);
@@ -180,9 +168,10 @@ describe('onlykey-cli, loading keys from PGP files', {
 
       /*
        * The device ACCEPTED it, which `setpqc` taught us not to take from the
-       * CLI's word: 12-cli-slots pins `setpqc` reporting success for a load the
-       * device refused three times over. loadpqc shares that route, so its
-       * success line is worth exactly as little until the device agrees.
+       * CLI's word: it once reported success for a load the device refused
+       * three times over (12-cli-slots now pins loadpqc refusing properly).
+       * loadpqc shares that route, so its success line is worth exactly as
+       * little until the device agrees.
        */
       await device.waitHid(IFACE.VENDOR,
         { since, match: ANSWER, timeoutMs: 20000, signal });

@@ -6,8 +6,11 @@
  * `OKSETPRIV` is not reachable over the WebAuthn transport at all - confirmed
  * by direct firmware read, and recorded in composite_pgp.js's own comments - so
  * a composite key can only be loaded by a client that speaks the vendor
- * interface. That is `onlykey-cli setpqc`, and therefore section 2, and
+ * interface. That is `onlykey-cli loadpqc`, and therefore section 2, and
  * therefore this file has to exist before the pgp-pqc page can be tested at all.
+ * (It was `setpqc`, which took the raw 160-byte blob; python-onlykey deleted it
+ * in 4b452ef, and loadpqc takes an armored key file - see lib/pqc.js
+ * compositeKey().)
  *
  * Verifying the load is the interesting part, because the device will not tell
  * you. okpqc.h says it plainly: okcrypto_getpubkey() has no KEYTYPE_PQC_PGP
@@ -30,7 +33,7 @@ const cli = require('../../lib/cli');
 const webenv = require('../../lib/webenv');
 const pqc = require('../../lib/pqc');
 
-const SLOT_NAME = 'RSA1';
+const SLOT_NAME = 'PQC1';   /* the CLI's name for RSA slot 1 when it holds a composite key */
 const SLOT_ID = 1;
 const HALF_ECC = 0;
 
@@ -40,6 +43,7 @@ describe('loading a composite PGP-PQC key', {
   timeoutMs: 240000,
 }, () => {
   let blob = null;
+  let armoredPrivateKey = null;
   let ed25519Pub = null;
 
   it('generates a key to load', async ({ assert, log }) => {
@@ -48,14 +52,15 @@ describe('loading a composite PGP-PQC key', {
      * it with the CLI is that the two halves of this feature live in different
      * clients: the browser makes the key, a command line puts it on the device,
      * and neither can do the other's job. If they disagree about the layout,
-     * this is where it shows.
+     * this is where it shows. compositeKey() mirrors the web app's generator and
+     * packs with its packBlob(), and also keeps the armored private key - the
+     * file loadpqc reads.
      */
     const composite = webenv.loadPlain('composite_pgp.js');
-    const generated = await composite.generateCompositeKey(webenv.openpgp(), {
-      userId: { name: 'Kit', email: 'kit@example.com' },
-    });
+    const generated = await pqc.compositeKey(webenv.openpgp(), composite);
 
-    blob = Buffer.from(generated.blob);
+    blob = generated.blob;
+    armoredPrivateKey = generated.armoredPrivateKey;
     assert.equal(blob.length, 160, 'the blob is not 160 bytes');
 
     /*
@@ -79,13 +84,13 @@ describe('loading a composite PGP-PQC key', {
     await device.unlock(PINS.primary, { signal });
     await device.enterConfigMode(PINS.primary, { signal });
 
-    const result = await cli.run('onlykey-cli',
-      ['setpqc', SLOT_NAME, blob.toString('hex')], { timeoutMs: 60000, signal });
+    const result = await pqc.loadWithCli(armoredPrivateKey,
+      { slot: SLOT_NAME, timeoutMs: 60000, signal });
 
     assert.equal(result.code, 0,
-      `setpqc failed: ${result.stderr || result.stdout}`);
+      `loadpqc failed: ${result.stderr || result.stdout}`);
     assert.includes(`${result.stdout}${result.stderr}`, 'Loaded composite',
-      `setpqc did not report a load: ${result.stdout}`);
+      `loadpqc did not report a load: ${result.stdout}`);
   });
 
   it('signs with the key it was given', async ({ device, assert, signal, log }) => {

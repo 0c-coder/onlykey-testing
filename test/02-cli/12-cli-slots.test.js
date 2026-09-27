@@ -46,6 +46,7 @@ const { IFACE, okmsg } = require('../../lib/device');
 const { PINS } = require('../../lib/config');
 const cli = require('../../lib/cli');
 const pqc = require('../../lib/pqc');
+const webenv = require('../../lib/webenv');
 
 /* RFC 8032 test vector 1. A published value on purpose: the point of storing it
  * is to recompute its public half here rather than to trust the device. */
@@ -311,9 +312,25 @@ describe('onlykey-cli, the slot and key endpoints', {
         `in config mode the device answered: ${JSON.stringify(wiped.said)}`);
     });
 
-  it('`setpqc` reports the refusal rather than claiming success',
+  it('`loadpqc` reports the refusal rather than claiming success',
     async ({ device, assert, signal, log, skip }) => {
       needCli({ skip });
+
+      /*
+       * A REAL composite key, where this used to send `setpqc RSA1` a blob of
+       * zeros: python-onlykey deleted setpqc (4b452ef) and loadpqc takes only
+       * an armored key file, which it parses before sending anything - so a
+       * placeholder no longer reaches the device at all. Made the web app's way
+       * (lib/pqc.js compositeKey()); this file does not otherwise need the web
+       * app, so without it this one test skips rather than the whole file.
+       */
+      let key;
+      try {
+        key = await pqc.compositeKey(webenv.openpgp(), webenv.loadPlain('composite_pgp.js'));
+      } catch (err) {
+        skip(`cannot make a composite key to load: ${err.message}`);
+      }
+
       await outOfConfigMode(device, signal);
 
       /*
@@ -340,8 +357,8 @@ describe('onlykey-cli, the slot and key endpoints', {
        * what proves the CLI is relaying a real refusal rather than failing for
        * some reason of its own.
        */
-      const blob = '00'.repeat(160);
-      const { result, said } = await sent(device, ['setpqc', 'RSA1', blob], { signal, replies: 3 });
+      const { result, said } = await pqc.withCompositeKeyFile(key.armoredPrivateKey,
+        (file) => sent(device, ['loadpqc', file, 'PQC1'], { signal, replies: 3 }));
 
       log(`device said: ${JSON.stringify(said)}`);
       log(`CLI said: ${JSON.stringify(result.stdout.trim())}`);
@@ -349,11 +366,11 @@ describe('onlykey-cli, the slot and key endpoints', {
       assert.ok(said.length > 0 && said.every((s) => s === 'Error not in config mode'),
         `expected the device to refuse every chunk, got ${JSON.stringify(said)}`);
       assert.notEqual(result.code, 0,
-        'setpqc exited 0 for a load the device refused three times');
+        'loadpqc exited 0 for a load the device refused three times');
       assert.includes(result.stdout, 'not in config mode',
-        'setpqc did not relay the device\'s reason for refusing');
+        'loadpqc did not relay the device\'s reason for refusing');
       assert.ok(!/Loaded composite PQC PGP key/.test(result.stdout),
-        'setpqc still claims to have loaded a key the device refused');
+        'loadpqc still claims to have loaded a key the device refused');
     });
 
   it('`loadpqc` refuses a file it cannot read, without touching the device',

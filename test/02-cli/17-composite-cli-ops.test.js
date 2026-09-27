@@ -1,5 +1,5 @@
 /*
- * The command line's own composite PQC operations: `setpqc`, `signpqc`,
+ * The command line's own composite PQC operations: `loadpqc`, `signpqc`,
  * `decryptpqc`.
  *
  * 05-composite-load and 06-composite-ops already prove the DEVICE does these
@@ -19,6 +19,9 @@
  * could not have passed in any form before, and it is the reason to read this
  * file: it is the first time a 3309-byte response has been reassembled by
  * python-onlykey itself rather than by a test harness working around it.
+ *
+ * (`setpqc`, the raw-blob load, was deleted from python-onlykey in 4b452ef;
+ * `loadpqc` takes an armored key file - see lib/pqc.js compositeKey().)
  *
  * The first test is a different kind of pin. `setpqc` used to print "Loaded
  * composite PQC PGP key (160 bytes) into RSA1" and exit 0 for a load the device
@@ -44,7 +47,7 @@ const cli = require('../../lib/cli');
 const pqc = require('../../lib/pqc');
 const webenv = require('../../lib/webenv');
 
-const SLOT_NAME = 'RSA3';
+const SLOT_NAME = 'PQC3';   /* the CLI names composite slots PQC1-PQC4 only */
 const SLOT_ID = 3;
 const HALF_ECC = 0;
 
@@ -63,6 +66,7 @@ describe('onlykey-cli composite PQC operations', {
   timeoutMs: 300000,
 }, () => {
   let blob = null;
+  let armoredPrivateKey = null;
   let ed25519Pub = null;
   let mldsaPub = null;
   let x25519Sk = null;
@@ -75,10 +79,9 @@ describe('onlykey-cli composite PQC operations', {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'okt-cliops-'));
 
     const composite = webenv.loadPlain('composite_pgp.js');
-    const generated = await composite.generateCompositeKey(webenv.openpgp(), {
-      userId: { name: 'Kit', email: 'kit@example.com' },
-    });
-    blob = Buffer.from(generated.blob);
+    const generated = await pqc.compositeKey(webenv.openpgp(), composite);
+    blob = generated.blob;
+    armoredPrivateKey = generated.armoredPrivateKey;
     assert.equal(blob.length, 160, 'the blob is not 160 bytes');
 
     /*
@@ -99,7 +102,7 @@ describe('onlykey-cli composite PQC operations', {
     log(`blob ready, ml-dsa public ${mldsaPub.toString('hex').slice(0, 16)}…`);
   });
 
-  it('setpqc refuses a load outside config mode, and says so in its exit code',
+  it('loadpqc refuses a load outside config mode, and says so in its exit code',
     async ({ device, assert, signal, log }) => {
       /*
        * Runs FIRST, before anything enters config mode, because that is the
@@ -114,8 +117,8 @@ describe('onlykey-cli composite PQC operations', {
        */
       await device.unlock(PINS.primary, { signal });
 
-      const result = await cli.run('onlykey-cli',
-        ['setpqc', SLOT_NAME, blob.toString('hex')], { timeoutMs: 60000, signal });
+      const result = await pqc.loadWithCli(armoredPrivateKey,
+        { slot: SLOT_NAME, timeoutMs: 60000, signal });
 
       const out = `${result.stdout}${result.stderr}`;
       log(`exit ${result.code}: ${(result.stdout || '').trim().split('\n').join(' | ')}`);
@@ -131,22 +134,22 @@ describe('onlykey-cli composite PQC operations', {
         /not in config mode/.test(out));
 
       assert.notEqual(result.code, 0,
-        'setpqc exited 0 for a load the device refused');
+        'loadpqc exited 0 for a load the device refused');
       assert.absent(!/Loaded composite/.test(out),
-        'setpqc claimed to have loaded a key the device refused');
+        'loadpqc claimed to have loaded a key the device refused');
     });
 
-  it('setpqc loads the key in config mode', async ({ device, assert, signal }) => {
+  it('loadpqc loads the key in config mode', async ({ device, assert, signal }) => {
     await device.restart({ signal });
     await device.unlock(PINS.primary, { signal });
     await device.enterConfigMode(PINS.primary, { signal });
 
-    const result = await cli.run('onlykey-cli',
-      ['setpqc', SLOT_NAME, blob.toString('hex')], { timeoutMs: 60000, signal });
+    const result = await pqc.loadWithCli(armoredPrivateKey,
+      { slot: SLOT_NAME, timeoutMs: 60000, signal });
 
-    assert.equal(result.code, 0, `setpqc failed: ${result.stderr || result.stdout}`);
+    assert.equal(result.code, 0, `loadpqc failed: ${result.stderr || result.stdout}`);
     assert.includes(`${result.stdout}${result.stderr}`, 'Loaded composite',
-      `setpqc did not report a load: ${result.stdout}`);
+      `loadpqc did not report a load: ${result.stdout}`);
 
     /* OKSIGN and OKDECRYPT are not on config mode's allow-list. */
     await device.restart({ signal });
