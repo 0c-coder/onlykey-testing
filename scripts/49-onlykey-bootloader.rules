@@ -1,0 +1,33 @@
+# UDEV rules for the Teensy HalfKay BOOTLOADER - what an OnlyKey enumerates as
+# with the button held at plug-in, and what lib/flash.js writes to.
+#
+#   sudo cp scripts/49-onlykey-bootloader.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#
+# Then UNPLUG AND REPLUG the key: a reload does not re-apply rules to nodes
+# that already exist.
+#
+# WHY THIS IS A SEPARATE FILE FROM THE TWO THAT ALREADY EXIST
+#
+# Neither covers the bootloader, because the bootloader is a different device:
+#
+#   OnlyKey-App/resources/linux/49-onlykey.rules   1d50:60fc - the running key
+#   node-onlykey-emulator/.../70-onlykey-emulator.rules
+#                                                 1D50:60FC - the emulator
+#   HalfKay                                       16c0:0478 - THIS
+#
+# Measured on the build Pi, 2026-09-24: with no rule, hidraw nodes are
+# `crw------- root root`, so flash.js gets EACCES opening the bootloader and a
+# flash cannot start. 50-udev-default.rules only imports hwdb for hidraw and
+# sets no mode; 60-fido-id.rules sets an ID property and grants nothing.
+#
+# GROUP/MODE AND NOT uaccess ALONE. `TAG+="uaccess"` grants to the user at the
+# physical seat, and an SSH session is not a seat - so a flash driven remotely,
+# which is how this bench does it, would still be denied. uaccess is kept for
+# the local-console case; GROUP="plugdev" is what actually carries it.
+SUBSYSTEM=="hidraw", KERNELS=="0003:16C0:0478.*", TAG+="uaccess", GROUP="plugdev", MODE="0660"
+
+# Some OnlyKeys run as 16c0:0486 (Teensy RawHID) rather than 1d50:60fc - the
+# desktop app declares both in its manifest. Covered here so the same file
+# serves a key whichever way it enumerates.
+SUBSYSTEM=="hidraw", KERNELS=="0003:16C0:0486.*", TAG+="uaccess", GROUP="plugdev", MODE="0660"
