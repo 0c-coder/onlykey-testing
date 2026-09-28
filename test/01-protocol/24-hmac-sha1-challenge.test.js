@@ -58,6 +58,7 @@
 const crypto = require('crypto');
 
 const { describe, it } = require('../../lib/harness');
+const { IFACE, okmsg } = require('../../lib/device');
 const { PINS } = require('../../lib/config');
 
 /* okcore.h: the two reserved ECC slots the HMAC keys live in. */
@@ -72,16 +73,24 @@ const CHALLENGE_SLOT_2 = 0x38;   // challenges HMACSHA1_2 (129)
 const KBD_BUFFER_SIZE = 70;
 
 /*
- * THE WRITE'S COMPLETION MARKER, AND WHY IT IS NOT THE OBVIOUS STRING.
+ * THE WRITE'S COMPLETION MARKER IS READ OFF THE VENDOR INTERFACE, NOT THE
+ * CONSOLE, and the history of this line is the reason to say so.
  *
- * The acknowledgement "Successfully set ECC Key" never appears on the console
- * as TEXT - `byteprint()` renders it as hex, so what arrives is
- * "53 75 63 63 65 73 73 66 75 6C 6C 79 ...". A regex for the readable string
- * matches nothing and times out looking exactly like a device that did not
- * answer. Cost a run to find. "Sending transport response data" is printed with
- * Serial.println and is plain text, so it is the marker that works.
+ * It was `/Sending transport response data/`, read from the console. That
+ * print sits behind `DEBUG_CTAP_VERBOSE`, which `onlykey.h` ships commented
+ * out - so the marker was invisible on every build but a bench one and this
+ * file timed out looking exactly like a device that did not answer.
+ *
+ * The obvious replacement does not work either: "Successfully set ECC Key"
+ * never appears on the CONSOLE as text, because `byteprint()` renders it as
+ * hex ("53 75 63 63 65 73 73 66 75 6C 6C 79 ..."). That cost a run to find and
+ * is what sent the marker to the debug-only string in the first place.
+ *
+ * Both problems are the console. `hidprint()` writes the acknowledgement to
+ * `resp_buffer` and sends it on the VENDOR interface as plain text, where it is
+ * client-visible and owes nothing to any debug flag. So the wait moved there.
  */
-const WRITE_DONE = /Sending transport response data/;
+const WRITE_DONE = /Successfully set ECC Key|Error/;
 
 /* The challenge branch's own first print, and the completion print after it. */
 const CHALLENGE_SEEN = /HMACSHA1 Input/;
@@ -197,6 +206,19 @@ async function waitConsumed(device, re, { signal, timeoutMs = 20000 }) {
   return device.log.waitFor(re, { timeoutMs, signal });
 }
 
+/**
+ * Wait for the vendor-interface acknowledgement of a key write.
+ *
+ * `since` has to be taken BEFORE the write goes out: without it this matches
+ * the previous test's acknowledgement still sitting in the buffer and returns
+ * immediately, which passes and proves nothing.
+ */
+async function waitWritten(device, since, { signal, timeoutMs = 20000 }) {
+  const reply = await device.waitHid(IFACE.VENDOR,
+    { since, match: WRITE_DONE, timeoutMs, signal });
+  return okmsg.text(reply).trim();
+}
+
 async function readResponse(device, { signal, waitMs = 6000 }) {
   /*
    * POLL FOR THE FIRST 0xC0 RATHER THAN ASSUMING THE ANSWER IS READY.
@@ -294,8 +316,10 @@ describe('HMAC-SHA1 challenge-response over keyboard control transfers', {
 
       /* ---- write the key to HMACSHA1_1 (slot selector 1) ---- */
       device.log.clear();
+      const wrote = device.mark(IFACE.VENDOR);
       await sendKbdBuffer(device, writeKeyBuffer(WRITE_SLOT_1, KEY), { signal });
-      await waitConsumed(device, WRITE_DONE, { signal });
+      const ack = await waitWritten(device, wrote, { signal });
+      assert.match(ack, /Successfully set ECC Key/, `the HMAC key write failed: ${ack}`);
       log(`wrote a 20-byte HMAC key to slot ${HMACSHA1_1}`);
 
       /* ---- challenge that slot (selector 0x30) ---- */
@@ -360,8 +384,10 @@ describe('HMAC-SHA1 challenge-response over keyboard control transfers', {
        */
       await device.ensureUnlocked(PINS.primary, { signal });
       device.log.clear();
+      const wrote = device.mark(IFACE.VENDOR);
       await sendKbdBuffer(device, writeKeyBuffer(WRITE_SLOT_1, KEY), { signal });
-      await waitConsumed(device, WRITE_DONE, { signal });
+      const ack = await waitWritten(device, wrote, { signal });
+      assert.match(ack, /Successfully set ECC Key/, `the HMAC key write failed: ${ack}`);
 
       await device.sleep(FADE_SETTLE_MS, { signal });
       device.log.clear();
@@ -409,8 +435,10 @@ describe('HMAC-SHA1 challenge-response over keyboard control transfers', {
        */
       await device.ensureUnlocked(PINS.primary, { signal });
       device.log.clear();
+      const wrote = device.mark(IFACE.VENDOR);
       await sendKbdBuffer(device, writeKeyBuffer(WRITE_SLOT_1, KEY), { signal });
-      await waitConsumed(device, WRITE_DONE, { signal });
+      const ack = await waitWritten(device, wrote, { signal });
+      assert.match(ack, /Successfully set ECC Key/, `the HMAC key write failed: ${ack}`);
 
       await device.sleep(FADE_SETTLE_MS, { signal });
       device.log.clear();

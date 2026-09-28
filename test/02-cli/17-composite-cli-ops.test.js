@@ -1,5 +1,6 @@
 /*
- * The command line's own composite PQC operations: `setpqc`, `signpqc`,
+ * The command line's own composite PQC operations: `setkey PQCn p` (setpqc before
+ * python-onlykey 1.3.0), `signpqc`,
  * `decryptpqc`.
  *
  * 05-composite-load and 06-composite-ops already prove the DEVICE does these
@@ -28,6 +29,11 @@
  * REFUSAL is the only instrument that works, and it has to run before the key
  * is loaded or the device would be in config mode already.
  *
+ * python-onlykey 1.3.0 deleted setpqc; `setkey PQCn p` replaces it and carries
+ * the same pin. Its first version printed only the exception class and exited
+ * 0 on a refusal (fixed in python-onlykey f4a6031), so the exit-code half of
+ * this test still earns its keep.
+ *
  * SURFACE: vendor for every device operation; console only for the challenge
  * digits on the ML-KEM half, which no client surface reports. See PRODUCTION.md.
  */
@@ -44,7 +50,7 @@ const cli = require('../../lib/cli');
 const pqc = require('../../lib/pqc');
 const webenv = require('../../lib/webenv');
 
-const SLOT_NAME = 'RSA3';
+const SLOT_NAME = 'PQC3';  // python-onlykey 1.3.0 names composite slots PQC1-PQC4 only
 const SLOT_ID = 3;
 const HALF_ECC = 0;
 
@@ -99,7 +105,7 @@ describe('onlykey-cli composite PQC operations', {
     log(`blob ready, ml-dsa public ${mldsaPub.toString('hex').slice(0, 16)}…`);
   });
 
-  it('setpqc refuses a load outside config mode, and says so in its exit code',
+  it('setkey p refuses a load outside config mode, and says so in its exit code',
     async ({ device, assert, signal, log }) => {
       /*
        * Runs FIRST, before anything enters config mode, because that is the
@@ -115,7 +121,7 @@ describe('onlykey-cli composite PQC operations', {
       await device.unlock(PINS.primary, { signal });
 
       const result = await cli.run('onlykey-cli',
-        ['setpqc', SLOT_NAME, blob.toString('hex')], { timeoutMs: 60000, signal });
+        ['setkey', SLOT_NAME, 'p', blob.toString('hex')], { timeoutMs: 60000, signal });
 
       const out = `${result.stdout}${result.stderr}`;
       log(`exit ${result.code}: ${(result.stdout || '').trim().split('\n').join(' | ')}`);
@@ -131,22 +137,22 @@ describe('onlykey-cli composite PQC operations', {
         /not in config mode/.test(out));
 
       assert.notEqual(result.code, 0,
-        'setpqc exited 0 for a load the device refused');
+        'setkey p exited 0 for a load the device refused');
       assert.absent(!/Loaded composite/.test(out),
-        'setpqc claimed to have loaded a key the device refused');
+        'setkey p claimed to have loaded a key the device refused');
     });
 
-  it('setpqc loads the key in config mode', async ({ device, assert, signal }) => {
+  it('setkey p loads the key in config mode', async ({ device, assert, signal }) => {
     await device.restart({ signal });
     await device.unlock(PINS.primary, { signal });
     await device.enterConfigMode(PINS.primary, { signal });
 
     const result = await cli.run('onlykey-cli',
-      ['setpqc', SLOT_NAME, blob.toString('hex')], { timeoutMs: 60000, signal });
+      ['setkey', SLOT_NAME, 'p', blob.toString('hex')], { timeoutMs: 60000, signal });
 
-    assert.equal(result.code, 0, `setpqc failed: ${result.stderr || result.stdout}`);
+    assert.equal(result.code, 0, `setkey p failed: ${result.stderr || result.stdout}`);
     assert.includes(`${result.stdout}${result.stderr}`, 'Loaded composite',
-      `setpqc did not report a load: ${result.stdout}`);
+      `setkey p did not report a load: ${result.stdout}`);
 
     /* OKSIGN and OKDECRYPT are not on config mode's allow-list. */
     await device.restart({ signal });

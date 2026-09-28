@@ -79,11 +79,26 @@ describe('onlykey-cli, the read-only endpoints', {
      * `version` is a bare print - it never opens the device - and asserting the
      * device stayed silent is what makes that a fact about the command rather
      * than a description of one run. It is also the cheapest possible check
-     * that the CLI can start at all: python-onlykey constructs an OnlyKey() at
-     * MODULE IMPORT time, so a broken enumeration fails here, before any
-     * subcommand has run.
+     * that the CLI can start at all. Until python-onlykey 1.3.0 it constructed
+     * an OnlyKey() at MODULE IMPORT time, so every command - this one included
+     * - opened the device first; 1.3.0 connects on first use instead.
      */
-    const before = device.log.text.length;
+    /*
+     * Measured on the VENDOR interface, not the console. The console version of
+     * this assertion failed on 2026-09-22 with the CLI blameless: a DEBUG build
+     * prints its capacitive-touch calibration ("touchread1 and touchread1ref"
+     * ...) for a while after every boot, and this test ran 0.36 s after one.
+     * Console growth measures elapsed time, not what the command did - the
+     * same correction 12-cli-slots made for loadpqc. Anything the device says
+     * in answer to a host lands on the vendor interface.
+     */
+    /* Unlocked first: a LOCKED device broadcasts INITIALIZED every second on
+     * its own (taskInitialized - 01-protocol/06-vendor-status), and filtering
+     * that out would also hide the INITIALIZED a locked device sends back to a
+     * CLI that did talk to it (OKSETTIME answers with the status). Unlocked,
+     * the vendor interface is silent unless asked. */
+    await device.ensureUnlocked(PINS.primary, { signal });
+    const since = device.mark(IFACE.VENDOR);
 
     const result = await okc(['version'], { signal });
     assert.equal(result.code, 0, `onlykey-cli version failed: ${result.stderr}`);
@@ -91,8 +106,11 @@ describe('onlykey-cli, the read-only endpoints', {
 
     assert.match(result.stdout, /OnlyKey CLI v\d+\.\d+/,
       `unexpected version output: ${JSON.stringify(result.stdout.slice(0, 80))}`);
-    assert.equal(device.log.text.length, before,
-      'the device said something while the CLI printed its own version');
+    await device.sleep(1000, { signal });
+    const said = device.reportsSince(IFACE.VENDOR, since)
+      .map((r) => okmsg.text(r).trim()).filter(Boolean);
+    assert.equal(said.length, 0,
+      `the device answered something while the CLI printed its own version: ${JSON.stringify(said)}`);
   });
 
   it('`fwversion` agrees with the firmware the kit was told',

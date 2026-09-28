@@ -24,19 +24,24 @@
  *     RSA-1024   128 B     RSA-3072   384 B
  *     RSA-2048   256 B     RSA-4096   512 B   <- exactly one full chunk
  *
- * `chunk_len = remaining > MAX_LARGE_RESP_CHUNK ? MAX_LARGE_RESP_CHUNK :
- * remaining`, so on a reading of the code even 512 is served whole. **That is
- * exactly what reading cannot be trusted for**: 512 is simultaneously
- * MAX_LARGE_RESP_CHUNK and MAX_RSA_KEY_SIZE, and one `>` that should be `>=`, or
- * a cursor compared before it is advanced, splits it into 512 + 0 and puts the
- * host back in the 71-bytes-per-chunk failure. So RSA-4096 is driven first and
- * RSA-2048 second.
+ * TRANSIT v2 MOVED THAT BOUNDARY, and moved it the useful way. The old box was
+ * length-preserving, so 512 bytes of signature were 512 bytes on the wire -
+ * exactly one chunk, and the multi-chunk path the alpha report pointed at could
+ * only be reached by a PQC-sized response. `okcrypto_transit_seal()` frames a
+ * response as `[counter(4)][ciphertext][tag(16)]`, so the same signature is
+ * staged as 532 bytes and served as 512 + 20. RSA-4096 is therefore now the
+ * SMALLEST classic response that crosses the boundary, which is what this file
+ * wanted all along: the assertion is no longer "512 arrives whole" but "512 + 20
+ * arrives in two chunks and reassembles", and a cursor compared before it is
+ * advanced, or a `>` that should be `>=`, fails it. RSA-2048 (256 + 20 = 276) is
+ * the one-chunk control beside it.
  *
  * THE CLIENT HAD TO BE BUILT, and `lib/device/transit.js` is where it went.
  * `tunnel.js` alone cannot reach any command but OKCONNECT:
- * `bridge_to_onlykey()` runs `okcrypto_aes_crypto_box()` over the whole payload
- * before it looks at the command, so an unencrypted request is dispatched as
- * noise. Written in the kit rather than borrowed from the shipped library
+ * `bridge_to_onlykey()` opens every non-OKCONNECT keyhandle with
+ * `okcrypto_transit_open()` before it looks at the command, and a frame that
+ * does not authenticate is discarded whole - not dispatched as noise, simply
+ * never dispatched, which from here looks like the device ignoring the request. Written in the kit rather than borrowed from the shipped library
  * deliberately - `03-xwing-derive` lets the library send its option bytes because
  * the library IS its subject, and here the subject is the firmware's chunking, so
  * a second client would just be testing the library again. It also keeps this
@@ -74,13 +79,23 @@ const { PINS } = require('../../lib/config');
 const pqc = require('../../lib/pqc');
 
 const CHUNK = 57;                       // vendor-interface payload per report
-const REQUEST_CHUNK = 228;              // u2fSignBuffer's 57 * 4
+const REQUEST_CHUNK = 171;              // u2fSignBuffer's 57 * 3 - see below
 const MAX_LARGE_RESP_CHUNK = 512;       // ok_extension.cpp:116
+/*
+ * 171, not 228, and the arithmetic is the whole reason: a credential ID carries
+ * 245 payload bytes, a transit v2 frame costs 20 of them, and every chunk but
+ * the message's last must be a whole number of the firmware's 57-byte packets -
+ * `process_packets()` takes 57 from a packet not marked final whatever its real
+ * length. 245 - 20 = 225, and the largest multiple of 57 at or under 225 is 171.
+ * The shipped web app's u2fSignBuffer() uses the same number for the same reason.
+ */
 const FEATURE_SIGN = 64;
 const FEATURE_DECRYPT = 32;
 const SLOT_SIGN = 2;                    // slotid() sends OKSIGN here
 const SLOT_DECRYPT = 1;                 // ...and everything else here
 const FIELD_STORED_CHALLENGE = 22;
+const FIELD_WEBCRYPT_POLICY = 31;      // set_slot()'s webcrypt policy bitfield
+const OKWC_ALLOW_STORED_KEY = 0x01;     // okcore.h - stored-slot OKSIGN/OKDECRYPT
 const PRIMED = /Encrypted Buffer/g;
 
 describe('classic RSA over the WebAuthn tunnel', {
@@ -128,6 +143,39 @@ describe('classic RSA over the WebAuthn tunnel', {
     });
     await device.waitHid(IFACE.VENDOR, { since, match: /Success|Error/, timeoutMs: 8000, signal });
 
+    /*
+     * OPT IN TO STORED-SLOT PGP OVER FIDO2, which this whole file is.
+     *
+     * ok_extension.cpp gates every stored-slot OKSIGN/OKDECRYPT behind field 31
+     * bit 0, and the bit is OFF by default - "derived keys yes, PGP no". Without
+     * it the device answers `Error stored key use over FIDO2 not enabled` on the
+     * vendor interface and serves an empty stored response, so the FIDO poll
+     * below simply never sees `Encrypted Buffer` and times out 30s later with
+     * nothing to attribute it to. That is not a chunking failure and this file
+     * should not report it as one.
+     *
+     * It goes here because field 31 needs config mode, this helper opens the
+     * only config-mode window in the file, and the restart at the end is what
+     * leaves it. The byte survives the restart - it is EEPROM.
+     *
+     * NOT EXERCISED ON THE EMULATOR, and saying so is the point. webcryptcheck()
+     * opens with `#ifdef DEBUG ... return 2; // Trust all origins for debug
+     * firmware`, which returns before the policy byte is read - so on a debug
+     * build this write changes nothing and removing it would not turn the file
+     * red. It is here for the hardware run, where the early return is compiled
+     * out and the default is level 1. Read from device.cpp, not measured; the
+     * only thing measured here is that the device accepted the write.
+     */
+    since = device.mark(IFACE.VENDOR);
+    device.sendVendor({
+      msg: okmsg.MSG.OKSETSLOT, slot: 1, field: FIELD_WEBCRYPT_POLICY,
+      payload: Buffer.from([OKWC_ALLOW_STORED_KEY]),
+    });
+    const policy = await device.waitHid(IFACE.VENDOR,
+      { since, match: /Success|Error/, timeoutMs: 8000, signal });
+    assert.match(okmsg.text(policy).trim(), /Successfully set webcrypt policy/,
+      `enabling stored-key use over FIDO2: ${okmsg.text(policy).trim()}`);
+
     since = device.mark(IFACE.VENDOR);
     for (let i = 0; i < key.pq.length; i += CHUNK) {
       device.sendVendor({
@@ -167,7 +215,8 @@ describe('classic RSA over the WebAuthn tunnel', {
     log(`handshake: device pub ${devicePublic.subarray(0, 8).toString('hex')}…, model ${model}`);
     assert.match(model, /UNLOCKED/, `the device did not report itself unlocked: ${model}`);
 
-    return transit.transitKey(devicePublic, ours.privateKey);
+    /* The counter starts with the key, not with the process - see transit.js. */
+    return transit.session(transit.transitKey(devicePublic, ours.privateKey));
   }
 
   /**
@@ -178,14 +227,14 @@ describe('classic RSA over the WebAuthn tunnel', {
    * double-fire guard. opt2 marks the final chunk and is what makes the firmware
    * set `recv_buffer[6]` to the real length instead of 0xFF.
    */
-  async function sendSealed(ctap, key, { cmd, slot, payload, startAt = 1 }, opts) {
+  async function sendSealed(ctap, sess, { cmd, slot, payload, startAt = 1 }, opts) {
     let opt3 = startAt;
     let last = null;
     for (let i = 0; i < payload.length; i += REQUEST_CHUNK) {
       const piece = payload.subarray(i, i + REQUEST_CHUNK);
       const final = i + REQUEST_CHUNK >= payload.length;
       last = await tunnel.send(ctap, {
-        cmd, opt1: slot, opt2: final ? 1 : 0, opt3, data: transit.box(key, piece),
+        cmd, opt1: slot, opt2: final ? 1 : 0, opt3, data: transit.seal(sess, piece),
       }, opts);
       opt3 += 1;
     }
@@ -196,16 +245,22 @@ describe('classic RSA over the WebAuthn tunnel', {
    * Poll until the whole response has been served, counting the chunks.
    *
    * The chunk count is the assertion this file exists for, so it is returned
-   * rather than hidden: a 512-byte response arriving in one chunk and the same
-   * bytes arriving in two say different things about `send_stored_response()`.
+   * rather than hidden: the same bytes arriving in one chunk or in two say
+   * different things about `send_stored_response()`.
+   *
+   * `want` is the FRAMED length - plaintext + transit.OVERHEAD - because that is
+   * what is staged and therefore what has to arrive before the frame can be
+   * opened. Polling for the plaintext length stops one tag short and the open
+   * below fails on a truncated frame, which reads as a crypto failure and is not
+   * one.
    */
-  async function poll(ctap, key, want, { opt3, tries = 8 }, opts) {
+  async function poll(ctap, sess, want, { opt3, tries = 8 }, opts) {
     const chunks = [];
     let next = opt3;
     for (let i = 0; i < tries && Buffer.concat(chunks).length < want; i++) {
       const reply = await tunnel.send(ctap, {
         cmd: 0xF3,                                  // OKPING, the poll
-        opt3: next, data: transit.box(key, Buffer.alloc(16)),
+        opt3: next, data: transit.seal(sess, Buffer.alloc(16)),
       }, opts);
       next += 1;
       if (reply.error) throw new Error(`the device refused the poll: ${reply.error}`);
@@ -215,7 +270,7 @@ describe('classic RSA over the WebAuthn tunnel', {
   }
 
   /** Drive one signature end to end and return everything worth asserting on. */
-  async function signOverTunnel(device, ctap, key, transitKey, { signal, assert, log }) {
+  async function signOverTunnel(device, ctap, key, sess, { signal, assert, log }) {
     const message = Buffer.from(`okt tunnel rsa ${key.pq.length * 8}`);
     const digest = crypto.createHash('sha256').update(message).digest();
 
@@ -226,7 +281,7 @@ describe('classic RSA over the WebAuthn tunnel', {
     device.log.clear();
     const primed = device.log.count(PRIMED);
 
-    const { nextOpt3 } = await sendSealed(ctap, transitKey, {
+    const { nextOpt3 } = await sendSealed(ctap, sess, {
       cmd: okmsg.MSG.OKSIGN, slot: SLOT_SIGN, payload: digest,
     }, { timeoutMs: 30000, signal });
 
@@ -242,8 +297,8 @@ describe('classic RSA over the WebAuthn tunnel', {
       'so nothing below is about chunking');
 
     device.press(1);
-    const answer = await poll(ctap, transitKey, key.pq.length, { opt3: nextOpt3 },
-      { timeoutMs: 30000, signal });
+    const answer = await poll(ctap, sess, key.pq.length + transit.OVERHEAD,
+      { opt3: nextOpt3 }, { timeoutMs: 30000, signal });
 
     /*
      * THE RESPONSE IS SEALED TOO, and this is the one asymmetry that is easy to
@@ -259,60 +314,65 @@ describe('classic RSA over the WebAuthn tunnel', {
      * the right framing - and failed to verify, because the bytes were still
      * sealed.
      *
-     * The box is one keystream XORed, so opening it is the same call as sealing.
-     * It is applied to the WHOLE staged response before any chunking, so the
-     * concatenation of the chunks is what gets opened, not each chunk on its own.
+     * The frame wraps the WHOLE staged response before any chunking, so the
+     * concatenation of the chunks is what gets opened, not each chunk on its own -
+     * there is exactly one counter and one tag for the response, however many
+     * OKPING polls it took to collect it. `open()` throws on a bad tag rather
+     * than handing back noise, so a failure here is attributable.
      */
-    const opened = transit.box(transitKey, answer.bytes);
+    const opened = transit.open(sess, answer.bytes);
 
     return { message, digest, ...answer, sealed: answer.bytes, bytes: opened };
   }
 
-  it('an RSA-4096 signature is exactly one MAX_LARGE_RESP_CHUNK and arrives whole',
+  it('an RSA-4096 signature crosses MAX_LARGE_RESP_CHUNK once framed, and reassembles',
     async ({ device, assert, signal, log, skip }) => {
       /*
        * SURFACE: FIDO for the operation, vendor for the modulus, console for the
-       * two things no client reports. THE boundary case: 512 bytes is both
-       * MAX_LARGE_RESP_CHUNK and MAX_RSA_KEY_SIZE.
+       * two things no client reports. THE boundary case: 512 is both
+       * MAX_LARGE_RESP_CHUNK and MAX_RSA_KEY_SIZE, and transit v2's 20 bytes of
+       * framing push the staged response exactly 20 bytes past the chunk.
        */
       /*
-       * IT WAS GATED OFF BY DEFAULT, AND THE GATE WAS THE BUG REPORT. Loading a
-       * 4096-bit key used to abort the firmware: `rsa_priv_flash()`'s type-4
-       * branch guards on `packet_buffer_offset <= 456` and then memcpy'd a
-       * literal 57, so the ninth chunk wrote index 512 of a 512-byte array. See
-       * FINDING-rsa4096-overflow.md.
+       * UNGATED 2026-09-22, AND WHAT THE GATE USED TO SAY IS THE HISTORY.
+       * Loading a 4096-bit key used to abort the firmware - `rsa_priv_flash()`'s
+       * type-4 branch guarded on `packet_buffer_offset <= 456` and then memcpy'd
+       * a literal 57, so the ninth chunk wrote index 512 of a 512-byte array
+       * (FINDING-rsa4096-overflow.md). That could not be pinned as a passing
+       * test the way a wrong ANSWER can: the failure killed the device host and
+       * the runner classified it as a run-level abort before any assertion ran,
+       * so the case skipped behind OKT_EXPECT_RSA4096_FIX instead.
        *
-       * It could not be pinned as a passing test the way a wrong ANSWER can:
-       * the failure killed the device host, and the runner classifies that as a
-       * run-level abort before any assertion executes, so nothing inside a test
-       * could observe it. Left ungated it aborted every run of this file and
-       * both its order gates - hence `OKT_EXPECT_RSA4096_FIX`, which was there
-       * to be removed by whoever clamped the copy.
-       *
-       * The copy is clamped, so the variable is gone and this runs by default.
-       * It is now simply the boundary test the file was written for: 512 bytes
-       * is both MAX_LARGE_RESP_CHUNK and MAX_RSA_KEY_SIZE.
+       * The copy is clamped to `MAX_RSA_KEY_SIZE - packet_buffer_offset` now, so
+       * the key loads and - measured, not read - its stored modulus equals `p*q`
+       * byte for byte. `25-rsa4096-load.test.js` is what pins that, and it
+       * replaced the file that pinned the defect. The env var is gone with it.
+       * If this case ever fails by killing the device, the clamp has been
+       * removed; it is not this test being wrong.
        */
       /*
-       * STILL EMULATED ONLY, FOR A DIFFERENT REASON THAN BEFORE.
+       * EMULATED ONLY, AND THE ENV VAR MUST NOT BE ABLE TO OVERRIDE THAT.
        *
-       * The old reason was that the write was known to be out of bounds and
-       * only `_FORTIFY_SOURCE` - the EMULATOR's build, not a key's - would stop
-       * it rather than let it land silently on whatever follows
-       * `rsa_private_key`. That reason is spent: there is no overflow to catch.
+       * This is the one test in the file that is not hardware-capable, and it is
+       * gated at the TEST rather than on the suite because the other two ran
+       * against a physical key on 2026-08-06 and passed - gating the file would
+       * have thrown away real coverage.
        *
-       * What replaces it is provenance. The emulator stages and builds firmware
-       * from this checkout, so it demonstrably carries the clamp. A physical key
-       * runs whatever is flashed on it, and nothing here can tell whether that
-       * build has the fix - so an unguarded run would aim the old out-of-bounds
-       * write at a real device with nothing to catch it. The capability check
-       * stays until the suite can read a firmware version it trusts.
+       * The reason is asymmetric in a way the env var alone does not capture.
+       * What makes this case safe to drive is `_FORTIFY_SOURCE`, which is the
+       * EMULATOR's: the one-byte overflow in `rsa_priv_flash()` aborts at the
+       * point of the write, which is how the defect was found at all. On a key
+       * there is no such build, so the same write lands silently and corrupts
+       * whatever follows `rsa_private_key`. Setting the variable on a hardware
+       * run would therefore aim a known out-of-bounds write at a real device
+       * with nothing to catch it - so the capability is checked FIRST and the
+       * variable can only ever arm this where the abort exists.
        */
       if (!device.capabilities.has('emulated')) {
-        skip('a 4096-bit key load was an out-of-bounds WRITE before the clamp ' +
-          '(FINDING-rsa4096-overflow.md); only the emulator is built from this ' +
-          'checkout and so known to carry the fix - a key runs whatever is ' +
-          'flashed on it');
+        skip('a 4096-bit key load is a known out-of-bounds WRITE ' +
+          '(FINDING-rsa4096-overflow.md); it is only safe to drive where ' +
+          '_FORTIFY_SOURCE aborts it, which is the emulator - on a key the same ' +
+          'write lands silently');
       }
       if (!transit.probe().ok) skip(transit.probe().why);
       const self = transit.selfTest();
@@ -326,17 +386,22 @@ describe('classic RSA over the WebAuthn tunnel', {
 
       const ctap = new Ctap2(device, { signal });
       await ctap.init();
-      const transitKey = await handshake(device, ctap, { signal, assert, log });
+      const sess = await handshake(device, ctap, { signal, assert, log });
 
-      const got = await signOverTunnel(device, ctap, key, transitKey, { signal, assert, log });
-      log(`${got.chunks.length} chunk(s), ${got.bytes.length} bytes of signature`);
+      const got = await signOverTunnel(device, ctap, key, sess, { signal, assert, log });
+      log(`${got.chunks.length} chunk(s), ${got.sealed.length} framed, ` +
+        `${got.bytes.length} bytes of signature`);
 
       assert.equal(got.bytes.length, MAX_LARGE_RESP_CHUNK,
         `expected a ${MAX_LARGE_RESP_CHUNK}-byte signature, got ${got.bytes.length} - ` +
         'a short count here IS the ctap_end_get_assertion failure the alpha report predicted');
-      assert.equal(got.chunks.length, 1,
-        `512 bytes should be served in ONE chunk; ${got.chunks.length} means the cursor or ` +
-        'the comparison in send_stored_response() splits at the boundary');
+      assert.equal(got.sealed.length, MAX_LARGE_RESP_CHUNK + transit.OVERHEAD,
+        `a sealed 512-byte signature is ${MAX_LARGE_RESP_CHUNK + transit.OVERHEAD} bytes on the ` +
+        `wire; ${got.sealed.length} arrived`);
+      assert.equal(got.chunks.length, 2,
+        `512 + 20 is served in TWO chunks; ${got.chunks.length} means send_stored_response()'s ` +
+        'cursor or its comparison is wrong at the boundary - one chunk means it truncated, ' +
+        'three means it re-served');
 
       assert.ok(crypto.verify('sha256', got.message, verifier(key.published), got.bytes),
         'the signature does not verify against the modulus the device published - the ' +
@@ -356,13 +421,16 @@ describe('classic RSA over the WebAuthn tunnel', {
 
       const ctap = new Ctap2(device, { signal });
       await ctap.init();
-      const transitKey = await handshake(device, ctap, { signal, assert, log });
+      const sess = await handshake(device, ctap, { signal, assert, log });
 
-      const got = await signOverTunnel(device, ctap, key, transitKey, { signal, assert, log });
-      log(`${got.chunks.length} chunk(s), ${got.bytes.length} bytes of signature`);
+      const got = await signOverTunnel(device, ctap, key, sess, { signal, assert, log });
+      log(`${got.chunks.length} chunk(s), ${got.sealed.length} framed, ` +
+        `${got.bytes.length} bytes of signature`);
 
       assert.equal(got.bytes.length, 256, `expected 256 bytes, got ${got.bytes.length}`);
-      assert.equal(got.chunks.length, 1, 'a 256-byte response is half a chunk');
+      assert.equal(got.chunks.length, 1,
+        'a 256-byte signature is 276 bytes framed, still inside one chunk - this is the ' +
+        'control for the 4096 case above');
       assert.ok(crypto.verify('sha256', got.message, verifier(key.published), got.bytes),
         'the signature does not verify against the published modulus');
     });
@@ -395,7 +463,7 @@ describe('classic RSA over the WebAuthn tunnel', {
        * A DECRYPT IS WHERE CLASSIC RSA CROSSES THE KEYHANDLE BOUNDARY, which a
        * signature never does: a signature request is a 32-byte digest, one
        * keyhandle. A PKCS#1 v1.5 ciphertext is a whole modulus - 256 bytes for
-       * RSA-2048 - so it goes as 228 + 28, two keyhandles with opt3 1 then 2. The
+       * RSA-2048 - so it goes as 171 + 85, two keyhandles with opt3 1 then 2. The
        * fix moved the high-water mark to its own static, and what this asserts is
        * that BOTH chunks land: the device's own dump must be the full 256 bytes,
        * not the 28-byte tail.
@@ -417,13 +485,13 @@ describe('classic RSA over the WebAuthn tunnel', {
 
       const ctap = new Ctap2(device, { signal });
       await ctap.init();
-      const transitKey = await handshake(device, ctap, { signal, assert, log });
+      const sess = await handshake(device, ctap, { signal, assert, log });
 
       /* Clear first, then count - see signOverTunnel(). */
       device.log.clear();
       const primed = device.log.count(PRIMED);
 
-      const { nextOpt3 } = await sendSealed(ctap, transitKey, {
+      const { nextOpt3 } = await sendSealed(ctap, sess, {
         cmd: okmsg.MSG.OKDECRYPT, slot: SLOT_DECRYPT, payload: sealed,
       }, { timeoutMs: 30000, signal });
 
@@ -443,9 +511,9 @@ describe('classic RSA over the WebAuthn tunnel', {
       assert.bytes(received, sealed, 'the device received different bytes than were sent');
 
       device.press(1);
-      const answer = await poll(ctap, transitKey, 32, { opt3: nextOpt3 },
+      const answer = await poll(ctap, sess, 32 + transit.OVERHEAD, { opt3: nextOpt3 },
         { timeoutMs: 30000, signal });
-      const plaintext = transit.box(transitKey, answer.bytes).subarray(0, 32);
+      const plaintext = transit.open(sess, answer.bytes).subarray(0, 32);
       log(`device plaintext ${plaintext.toString('hex')}`);
       log(`expected         ${secret.toString('hex')}`);
 

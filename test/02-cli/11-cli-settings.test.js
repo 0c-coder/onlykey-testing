@@ -272,8 +272,12 @@ describe('onlykey-cli, the settings endpoints', {
        * cheap half and the half that is a security property; proving the gate
        * OPENS once is enough to say the gate is a gate rather than a wall.
        */
+      /* 1 (button press), not the legacy bitfield value 8: field 21 is the
+       * 0/1/2 user-input enum now, and python-onlykey 1.3.0 refuses anything
+       * else host-side without sending it - so '8' left the device silent and
+       * this test waiting for a report that was never coming. */
       await outOfConfigMode(device, signal);
-      const refused = await setting(device, ['derivedkeymode', '8'], { signal });
+      const refused = await setting(device, ['derivedkeymode', '1'], { signal });
       assert.equal(refused.said, 'Error not in config mode',
         `outside config mode the device answered: ${refused.said}`);
       relayed(assert, refused.result, refused.said);
@@ -284,7 +288,7 @@ describe('onlykey-cli, the settings endpoints', {
        * them as slot presses. */
       await pqc.readyForKeygen(device, { signal });
 
-      const accepted = await setting(device, ['derivedkeymode', '8'], { signal });
+      const accepted = await setting(device, ['derivedkeymode', '1'], { signal });
       assert.equal(accepted.said, 'Successfully set derived key challenge mode',
         `in config mode the device answered: ${accepted.said}`);
       relayed(assert, accepted.result, accepted.said);
@@ -323,7 +327,7 @@ describe('onlykey-cli, the settings endpoints', {
       relayed(assert, result, said);
     });
 
-  it('`2ndprofilemode` is refused after first use, and says so in its own words',
+  it('`2ndprofilemode` is gone from the CLI, and sends the device nothing',
     async ({ device, assert, signal, skip }) => {
       needCli({ skip });
       await device.ensureUnlocked(PINS.primary, { signal });
@@ -331,17 +335,22 @@ describe('onlykey-cli, the settings endpoints', {
       /*
        * SURFACE: vendor - survives into a production walk.
        *
-       * Worth pinning the exact wording, because this endpoint's SUCCESS path
-       * says nothing at all: okcore.cpp's case 23 has its
-       * `hidprint("Successfully set 2nd profile mode")` COMMENTED OUT, so a
-       * first-use write is accepted silently. Its refusal is therefore the only
-       * thing it ever says, and a client that waited for an acknowledgement on
-       * the accepting path would wait forever. Anyone driving this on a blank
-       * device needs to know that before they call it a hang.
+       * python-onlykey 1.3.0 removed the command: the second profile is always
+       * standard now (plausible deniability was retired), so there is nothing
+       * left for it to set. This used to pin the firmware's first-use refusal,
+       * "Second Profile Mode may only be changed on first use"; what matters
+       * now is that the removal is clean - the CLI says so, and nothing reaches
+       * the device. Unlocked, so the vendor interface is silent unless asked.
        */
-      const { result, said } = await setting(device, ['2ndprofilemode', '1'], { signal });
-      assert.equal(said, 'Second Profile Mode may only be changed on first use',
-        `the device answered: ${said}`);
-      relayed(assert, result, said);
+      const since = device.mark(IFACE.VENDOR);
+      const result = await cli.run('onlykey-cli', ['2ndprofilemode', '1'], { timeoutMs: 30000, signal });
+      await device.sleep(1500, { signal });
+      const said = device.reportsSince(IFACE.VENDOR, since)
+        .map((r) => okmsg.text(r).trim()).filter(Boolean);
+
+      assert.match(`${result.stdout}${result.stderr}`, /Command not found/i,
+        `the CLI still accepts 2ndprofilemode: ${JSON.stringify(result.stdout.trim())}`);
+      assert.equal(said.length, 0,
+        `a removed command still reached the device: ${JSON.stringify(said)}`);
     });
 });

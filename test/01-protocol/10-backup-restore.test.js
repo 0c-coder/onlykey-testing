@@ -113,9 +113,18 @@ describe('backup and restore',
         device.pressLine([{ button: 1, hold: 'hold' }]);
 
         /* The hold tier is 128 ticks, inside the firmware's [72,180) backup
-         * band. A press that lands mid-fade is discarded, as everywhere else. */
-        started = await device.log.waitFor(/Backing up Label Number/, { timeoutMs: 5000, signal })
-          .then(() => true, () => false);
+         * band. A press that lands mid-fade is discarded, as everywhere else.
+         *
+         * Started is the console line OR the typing itself, whichever shows
+         * first. Over the gadget the console line can trail the keystrokes past
+         * the 5s window: the backup was already typing, the next attempt's
+         * keys.clear() erased its BEGIN line, and the test failed on a backup
+         * the device typed correctly. Any keystroke at all also counts - never
+         * clear a buffer the device has started writing into. */
+        started = await Promise.any([
+          device.log.waitFor(/Backing up Label Number/, { timeoutMs: 5000, signal }),
+          device.waitKeystrokes(/-----BEGIN ONLYKEY BACKUP-----/, { timeoutMs: 5000, signal }),
+        ]).then(() => true, () => device.keystrokes.length > 0);
         if (!started) log(`hold ${attempt} landed mid-fade and was discarded`);
       }
       assert.ok(started, 'the device never started a backup in six attempts');
