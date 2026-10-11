@@ -22,6 +22,6 @@
     "node-hid": "^3.4.0"
   },
   "dependencies": {
-    "node-onlykey-lib": "github:bmatusiak/node-onlykey-lib#1fe958b13f0941e95a4772d2c80fae29faab13df"
+    "node-onlykey-lib": "github:bmatusiak/node-onlykey-lib#ad36bef90d71bcc19fce6d8acc72e278380fdca6"
   }
 }
