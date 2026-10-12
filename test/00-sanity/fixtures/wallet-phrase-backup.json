@@ -1,0 +1,9 @@
+{
+  "v": 1,
+  "why": "test/01-protocol/39-wallet-phrase-record: a throwaway emulator (set up from blank, random derive key) - its typed backup, and the wallet phrase its derive key gives for the name below. Test keys only.",
+  "passphrase": "okt wallet phrase backup passphrase",
+  "name": "okt-vector",
+  "out": "bip39-12",
+  "words": "noise furnace curve mango then turkey slice filter busy prevent erupt cake",
+  "backup": "-----BEGIN ONLYKEY BACKUP-----\nhTa3adjC4hBQaEsbrLICch3sWbMTXekZ2BOWBDkwCfyIT4ycwlTFPHWEUoSjO3+L44W5lyx08cvQ\nRr9ho1y3t7GmNxu6KjQSGlA4MLvb0OWOEdWI9SChUDbMt6jDs/Yy/ejuKWt/L+Wi3KcE8fhSABEO\nLp1rkn52FbBI7zGdn5+pwdDQY4IJyQAoREODwl3IbHhKh1kOOxILn3QNVvReQKF9wf+jGB5KhVBe\nSaSfvI1ayI/Za21RKWkW7FY2K8ThIOsuqD0d1ZemyAvLRvq5QlvzLXMrdMvFaBgavncIBVtbLHQw\nYxemuAzSIQf96yBb80rbmPUSI/tdhC2RiCjtXVN14WQZq5BpCSW/ati57G37e6114/s8S3CTuCzF\nkMSUoiEKW7gwU59MVc9CSMigwBmDxfWnR+G9ouIz4GujC9AHZntEdh+ivJW+am0eSaA1g8FxMiSY\nrGU=\n--9+9x3fd6p9FbJABlLfGPL6BljzybnOrmPT7eDG+nK4w=\n-----END ONLYKEY BACKUP-----"
+}
