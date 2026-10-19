@@ -46,7 +46,11 @@ const NO_CREDENTIALS = 0x2E;
 const INVALID_COMMAND = 0x01;
 const BEFORE_MS = 350;               // init packet this far ahead of the timer
 const AFTER_MS = 350;                // continuation this far after it
-const ROUNDS = 3;                    // a round that misses the moment is retried
+/* A round that misses the moment is retried. On a physical key the timer
+ * lands up to ~400 ms differently from one unlock to the next (4450 ms and
+ * 4888 ms on the same key, 2026-10-19), wider than the 350 ms window, so three
+ * rounds could all miss; the emulator hits it in the first. */
+const ROUNDS = 10;
 
 /* A getAssertion that needs no PIN and no touch, and spans two packets. */
 function assertionRequest() {

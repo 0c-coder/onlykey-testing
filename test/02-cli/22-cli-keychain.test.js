@@ -4,7 +4,7 @@
  * firmware, with the device's own answers as the truth.
  *
  *   keychain gen <type> --slot ECCn --label …   generate inside the key (config mode)
- *   keychain list                              every key slot: kind, label, fingerprint
+ *   keychain slots                             every key slot: kind, label, fingerprint
  *   keychain pub ECCn                          the public key, as hex and an SSH line
  *   keychain derive ssh <type> <user@host>     a derived public key (no slot)
  *
@@ -46,7 +46,7 @@ async function rawPublicKey(device, signal, slot) {
     .filter((r) => !isStatus(r)).map((r) => Buffer.from(r).subarray(0, REPORT)));
 }
 
-describe('onlykey-js keychain: gen, list, pub and derive against the real firmware', {
+describe('onlykey-js keychain: gen, slots, pub and derive against the real firmware', {
   state: 'initialized',
   requires: ['crypto', 'client-access'],
   negative: true,
@@ -73,16 +73,16 @@ describe('onlykey-js keychain: gen, list, pub and derive against the real firmwa
       assert.ok(/keychain pub ECC7/.test(r.stdout), 'the CLI did not say how to read the key after the restart');
     });
 
-  it('after the restart, `keychain list` names it and `keychain pub` prints what the device holds',
+  it('after the restart, `keychain slots` names it and `keychain pub` prints what the device holds',
     async ({ device, assert, signal, log, skip }) => {
       needCli({ skip });
       await device.restart({ signal });
       await device.ensureUnlocked(PINS.primary, { signal });
-      const list = await js(['keychain', 'list'], signal);
-      show(log, 'keychain list', list);
-      assert.equal(list.code, 0, `keychain list failed: ${list.stderr.trim()}`);
+      const list = await js(['keychain', 'slots'], signal);
+      show(log, 'keychain slots', list);
+      assert.equal(list.code, 0, `keychain slots failed: ${list.stderr.trim()}`);
       const row = list.stdout.split('\n').find((l) => l.startsWith(`${NAME} `));
-      assert.ok(row && /\bed25519\b/.test(row) && row.includes(LABEL), `keychain list does not show ECC7 as ed25519 "${LABEL}": ${row}`);
+      assert.ok(row && /\bed25519\b/.test(row) && row.includes(LABEL), `keychain slots does not show ECC7 as ed25519 "${LABEL}": ${row}`);
 
       const pub = await js(['keychain', 'pub', NAME], signal);
       show(log, 'keychain pub', pub);
@@ -133,11 +133,19 @@ describe('onlykey-js keychain: gen, list, pub and derive against the real firmwa
    * The label scheme runs over FIDO (CTAPHID). The desktop pipe opens the FIDO
    * interface on first use (lib cli/transport-hid.js, 2026-10-01); before
    * that, this command could not run from a desktop at all.
+   *
+   * Windows hands a security key's FIDO interface only to an elevated program
+   * (its WebAuthn service keeps it), and onlykey-js says so and exits. From a
+   * normal shell that is the platform, not a fault, so the test skips with the
+   * CLI's own reason; any other failure still fails.
    */
   it('`keychain derive label p256 …` over FIDO gives the same public key twice', async ({ device, assert, signal, log, skip }) => {
     needCli({ skip });
     await device.ensureUnlocked(PINS.primary, { signal });
     const one = await js(['keychain', 'derive', 'label', 'p256', 'keychain-kit.example'], signal);
+    if (process.platform === 'win32' && one.code !== 0 && /only to an elevated program/.test(one.stderr)) {
+      skip(`Windows: ${one.stderr.trim().replace(/^onlykey-js: /, '')}`);
+    }
     const two = await js(['keychain', 'derive', 'label', 'p256', 'keychain-kit.example'], signal);
     show(log, 'keychain derive label', one);
     assert.equal(one.code, 0, `keychain derive label failed: ${one.stderr.trim()}`);

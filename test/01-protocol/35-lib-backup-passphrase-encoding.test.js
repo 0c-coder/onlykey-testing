@@ -104,7 +104,12 @@ async function typeBackup(device, signal, log) {
     if (!started) log(`hold ${attempt} landed mid-fade and was discarded`);
   }
   if (!started) throw new Error('the device never started a backup in six attempts');
-  await device.waitKeystrokes(/-----END ONLYKEY BACKUP-----/, { timeoutMs: 180000, signal });
+  /* 10 minutes, not 3: this backup holds a stored ECC key, and a physical key
+   * types at keyboard speed - 4 min 20 s on a developer OnlyKey (2026-10-19),
+   * 48 s on the emulator, which no USB host paces. Ending the wait early also
+   * left the key still typing, so the next file found it deaf. The wait ends
+   * as soon as the backup does. */
+  await device.waitKeystrokes(/-----END ONLYKEY BACKUP-----/, { timeoutMs: 600000, signal });
   return device.keystrokes;
 }
 
@@ -124,7 +129,7 @@ describe('node-onlykey-lib backup passphrase: UTF-8, Latin-1 fallback, real firm
   state: 'initialized',
   requires: ['crypto', 'keyboard-capture'],
   negative: true,
-  timeoutMs: 900000,
+  timeoutMs: 1800000,                // two typed backups, each minutes long on a physical key
 }, () => {
   let oldBackup = null;
   let newBackup = null;

@@ -1,0 +1,67 @@
+{
+  "recorded": "2026-10-19T19:24:02.044Z",
+  "firmware": "v3.1.0-testc",
+  "host": "bmatusiak-ZBOX-MI531",
+  "source": "okt byhand run 2026-10-19T19:24:02.044Z, all 14 steps passing: a developer OnlyKey flashed with release 3.1.0 (OnlyKey-Firmware 9fceea1 + libraries 8d28305 + the CTAPHID wipe fix, patch 0005), lib-agent 8d30637 + 0001-0004, python-onlykey e6d261c. Per-key values (the derived SSH key, the GPG fingerprints) are not kept. Replace with okt byhand --save-baseline.",
+  "steps": {
+    "unlock": {
+      "value": "unlocked"
+    },
+    "py-fwversion": {
+      "value": "v3.1.0-testc"
+    },
+    "js-fwversion": {
+      "value": "v3.1.0-testc"
+    },
+    "py-getlabels": {
+      "value": [
+        "1a=",
+        "1b=",
+        "2a=",
+        "2b=",
+        "3a=",
+        "3b=",
+        "4a=",
+        "4b=",
+        "5a=",
+        "5b=",
+        "6a=",
+        "6b="
+      ]
+    },
+    "js-getlabels": {
+      "value": [
+        "1a=",
+        "1b=",
+        "2a=",
+        "2b=",
+        "3a=",
+        "3b=",
+        "4a=",
+        "4b=",
+        "5a=",
+        "5b=",
+        "6a=",
+        "6b="
+      ]
+    },
+    "py-wink": {
+      "value": "exit 0"
+    },
+    "js-agent-pubkey": {
+      "value": "the same key as lib-agent"
+    },
+    "agent-sign": {
+      "value": "signature verified by ssh-keygen"
+    },
+    "js-agent-sign": {
+      "value": "signature verified by ssh-keygen"
+    },
+    "gpg-sign": {
+      "value": "signature verified by gpg"
+    },
+    "gpg-parity": {
+      "value": "the same fingerprint from both tools"
+    }
+  }
+}

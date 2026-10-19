@@ -53,7 +53,8 @@ const OVERWRITTEN = 'clobbered77';
 /* Typing 600 characters takes the better part of a minute, and the restore
  * chunks and reboots after it. */
 describe('backup and restore',
-  { state: 'initialized', requires: ['crypto', 'keyboard-capture'], timeoutMs: 240000 }, () => {
+  /* 15 minutes: a physical key types its backup at keyboard speed, which takes minutes. */
+  { state: 'initialized', requires: ['crypto', 'keyboard-capture'], timeoutMs: 900000 }, () => {
     let captured = null;
     let parsed = null;
 
@@ -134,7 +135,7 @@ describe('backup and restore',
        * slot scan and then goes quiet for the whole of the typing, which is
        * where the keystrokes actually are.
        */
-      await device.waitKeystrokes(/-----END ONLYKEY BACKUP-----/, { timeoutMs: 180000, signal });
+      await device.waitKeystrokes(/-----END ONLYKEY BACKUP-----/, { timeoutMs: 600000, signal }); // a physical key types at keyboard speed (see lib/wallet-phrase.js)
       captured = device.keystrokes;
 
       assert.includes(captured, backup.BEGIN);

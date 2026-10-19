@@ -198,6 +198,22 @@ function publicPoint(body) {
  */
 function agentsFor(dir) {
   const pids = [];
+  if (process.platform === 'win32') {
+    /*
+     * Windows has no /proc: ask WMI for the command lines, with the window
+     * hidden. The agent there is pythonw.exe running the onlykey-gpg-agent
+     * launcher, so the match is the same; paths compare case-insensitively.
+     */
+    const out = require('child_process').execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*onlykey-gpg-agent*' } | " +
+      'ForEach-Object { "$($_.ProcessId)`t$($_.CommandLine)" }'],
+    { encoding: 'utf8', windowsHide: true, timeout: 30000 });
+    for (const line of out.split(/\r?\n/)) {
+      const [pid, cmdline = ''] = line.split('\t');
+      if (/^\d+$/.test(pid) && cmdline.toLowerCase().includes(dir.toLowerCase())) pids.push(Number(pid));
+    }
+    return pids;
+  }
   for (const entry of fs.readdirSync('/proc')) {
     if (!/^\d+$/.test(entry)) continue;
     let cmdline;
@@ -220,6 +236,10 @@ describe('onlykey-gpg, initialising a GnuPG identity', {
   let exported = null;       // what gpg holds afterwards, as packets
 
   const at = (name) => path.join(homedir, name);
+  /* Windows' gpg cannot run a shell script as agent-program (CreateProcess,
+   * error 193), so init writes a batch file there. */
+  const WIN = process.platform === 'win32';
+  const AGENT_SCRIPT = WIN ? 'run-agent.cmd' : 'run-agent.sh';
 
   /** Every gpg invocation is against the throwaway homedir, never the user's. */
   /* Asked once for the file: every test from init on needs a gpg lib-agent can
@@ -321,8 +341,13 @@ describe('onlykey-gpg, initialising a GnuPG identity', {
        * work it is inline - "Confirm on OnlyKey to authorize <id>: press any
        * button, or enter 5 4 2 if derivedkeymode/storedkeymode is 0" - because
        * the host cannot tell which mode the key is in. Both forms are accepted.
+       *
+       * It is read from stderr: lib-agent 1.1.16 (PR #19 @ 8d30637) prints the
+       * prompt there, so it reaches the user even when stdout is captured or
+       * redirected (onlykey-agent -d, for one, prints SSH_AUTH_SOCK=… on stdout
+       * for the shell to eval).
        */
-      const printed = [...init.stdout.matchAll(
+      const printed = [...init.stderr.matchAll(
         /(?:^\s*|\benter )([1-6]) ([1-6]) ([1-6])(?=\s*$|\s+if\b)/gm)]
         .map((m) => [Number(m[1]), Number(m[2]), Number(m[3])]);
 
@@ -354,29 +379,37 @@ describe('onlykey-gpg, initialising a GnuPG identity', {
      * gpg-agent. If either is wrong the keyring looks perfectly normal and
      * every operation fails at the point of use.
      */
-    for (const name of ['run-agent.sh', 'gpg.conf', 'env', 'pubkey.asc', 'ownertrust.txt']) {
+    for (const name of [AGENT_SCRIPT, 'gpg.conf', 'env', 'pubkey.asc', 'ownertrust.txt']) {
       assert.ok(fs.existsSync(at(name)), `init did not write ${name}`);
     }
 
-    const script = fs.readFileSync(at('run-agent.sh'), 'utf8');
-    assert.includes(script, 'onlykey-gpg-agent', 'run-agent.sh does not launch the OnlyKey agent');
-    assert.includes(script, '--skey-slot=ECC32', 'run-agent.sh does not name the signing slot');
-    assert.includes(script, '--dkey-slot=ECC32', 'run-agent.sh does not name the decryption slot');
+    const script = fs.readFileSync(at(AGENT_SCRIPT), 'utf8');
+    assert.includes(script, 'onlykey-gpg-agent', `${AGENT_SCRIPT} does not launch the OnlyKey agent`);
+    assert.includes(script, '--skey-slot=ECC32', `${AGENT_SCRIPT} does not name the signing slot`);
+    assert.includes(script, '--dkey-slot=ECC32', `${AGENT_SCRIPT} does not name the decryption slot`);
+    if (WIN) {
+      /* A console program started from gpg opens a console window each time
+       * gpg starts its agent; pythonw.exe runs it without one. */
+      assert.match(script, /pythonw\.exe/i, 'run-agent.cmd starts the agent with a console window');
+    }
 
     /* ECC32 is convert_keyslot()'s spelling of 132 - the derived-key slot. A
      * different number here means the agent would later ask for a STORED key
      * that nothing ever put in the device. */
-    log(`run-agent.sh slots: ${(script.match(/--[sd]key-slot=\S+/g) || []).join(' ')}`);
+    log(`${AGENT_SCRIPT} slots: ${(script.match(/--[sd]key-slot=\S+/g) || []).join(' ')}`);
 
     const conf = fs.readFileSync(at('gpg.conf'), 'utf8');
-    assert.includes(conf, `agent-program ${at('run-agent.sh')}`,
+    assert.includes(conf, `agent-program ${at(AGENT_SCRIPT)}`,
       'gpg.conf does not point gpg at the hardware agent');
     assert.includes(conf, `default-key "${USER_ID}"`, 'gpg.conf names a different default key');
 
     /* 700 on both, because run-agent.sh is executed and the homedir holds a
-     * keyring; gpg refuses a homedir with looser permissions anyway. */
-    assert.equal(fs.statSync(homedir).mode & 0o777, 0o700, 'the homedir is not 700');
-    assert.equal(fs.statSync(at('run-agent.sh')).mode & 0o777, 0o700, 'run-agent.sh is not 700');
+     * keyring; gpg refuses a homedir with looser permissions anyway. Windows
+     * has no mode bits (the profile's ACL is what protects the homedir). */
+    if (!WIN) {
+      assert.equal(fs.statSync(homedir).mode & 0o777, 0o700, 'the homedir is not 700');
+      assert.equal(fs.statSync(at(AGENT_SCRIPT)).mode & 0o777, 0o700, `${AGENT_SCRIPT} is not 700`);
+    }
   });
 
   it('imported the key into a keyring gpg can read', async ({ assert, signal, log, skip }) => {
@@ -493,7 +526,7 @@ describe('onlykey-gpg, initialising a GnuPG identity', {
     const running = agentsFor(homedir);
     log(`onlykey-gpg-agent pids for this homedir: ${JSON.stringify(running)}`);
     assert.ok(running.length > 0,
-      'init did not leave an agent running - gpg.conf may not be pointing at run-agent.sh');
+      `init did not leave an agent running - gpg.conf may not be pointing at ${AGENT_SCRIPT}`);
 
     for (const pid of running) {
       try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
@@ -535,8 +568,14 @@ describe('onlykey-gpg, initialising a GnuPG identity', {
       assert.equal(again.code, 1, 'init reused an existing homedir instead of refusing');
       assert.equal(device.log.count(PRIMED), primed,
         'the refused init still primed a challenge - the next operation would consume it');
-      assert.equal(device.log.text.length, before,
-        'the refused init reached the device before deciding it could not run');
+      /* "wipe buffers after 5 sec" is the firmware's own timer, printed five
+       * seconds after the previous test's key lookup whatever the host does;
+       * when the steps run quickly it lands inside this window. Anything else
+       * the device printed is the refused init reaching it. */
+      const added = device.log.text.slice(before)
+        .split(/\r?\n/).filter((l) => l && !/^wipe buffers after \d+ sec$/.test(l));
+      assert.equal(added.length, 0,
+        `the refused init reached the device before deciding it could not run - the device logged: ${JSON.stringify(added.slice(0, 5))}`);
     });
 
   it('cleans up after itself', async ({ assert, skip }) => {

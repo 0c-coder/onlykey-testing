@@ -56,7 +56,7 @@ const LABEL = 'appbkup3';
 describe('app backup', {
   state: 'initialized',
   requires: ['client-access', 'display', 'nwjs', 'keyboard-capture'],
-  timeoutMs: 300000,
+  timeoutMs: 1200000,                // a physical key types its backup at keyboard speed, which takes minutes
 }, () => {
   let captured = null;
 
@@ -105,7 +105,7 @@ describe('app backup', {
     }
     assert.ok(started, 'the device never started a backup in six attempts');
 
-    await device.waitKeystrokes(/-----END ONLYKEY BACKUP-----/, { timeoutMs: 180000, signal });
+    await device.waitKeystrokes(/-----END ONLYKEY BACKUP-----/, { timeoutMs: 600000, signal }); // a physical key types at keyboard speed (see lib/wallet-phrase.js)
     captured = device.keystrokes;
 
     const parsed = backup.parse(captured);

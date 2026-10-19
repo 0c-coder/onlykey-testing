@@ -37,6 +37,17 @@ function usage() {
   okt caps
   okt fixture <state>
   okt flash [hexfile]  [--no-reboot] [--delay <ms>]
+  okt byhand           [--only <id,id>] [--list] [--save-baseline]
+
+okt byhand is section 06-byhand, and only runs this way - never with okt run.
+It runs the real tools (python onlykey-cli, lib-agent, onlykey-js, gpg,
+ssh-keygen) against a PHYSICAL key that is plugged in and LOCKED. You unlock
+it with the PIN and press Enter once; after that you only press the key's
+button when a red PRESS NOW appears. It stops at the first failure, and the
+whole run is in runs/byhand-latest.log. The kit opens nothing, so the tools
+get the key to themselves. --list shows the steps; --only runs some by id.
+Each step's result is compared with test/06-byhand/baseline.json; a run of
+every step that passes can replace it with --save-baseline.
 
 targets are section names (01-protocol), directories, or single files.
 
@@ -79,7 +90,7 @@ function parse(argv) {
     command: argv[2] || 'help', targets: [], filter: null,
     timeoutMs: null, quiet: false, adapter: 'emulated',
     reboot: true, delayMs: null, isolate: false, reverse: false, controls: false,
-    keepGoing: false,
+    keepGoing: false, only: [], list: false, saveBaseline: false,
   };
   for (let i = 3; i < argv.length; i++) {
     const a = argv[i];
@@ -94,6 +105,9 @@ function parse(argv) {
     else if (a === '--no-reboot') out.reboot = false;
     else if (a === '--delay') out.delayMs = parseInt(argv[++i], 10);
     else if (a === '--emulated') out.adapter = 'emulated';
+    else if (a === '--only') out.only = String(argv[++i] || '').split(',').filter(Boolean);
+    else if (a === '--list') out.list = true;
+    else if (a === '--save-baseline') out.saveBaseline = true;
     else if (a === '--help' || a === '-h') { usage(); process.exit(0); }
     else if (a.startsWith('-')) { console.error(`unknown option: ${a}`); process.exit(EXIT.RUNNER_ERROR); }
     else out.targets.push(a);
@@ -365,6 +379,12 @@ async function main() {
           : '  key did NOT come back on the bus - check it');
       }
       console.log(`flashed ${result.blocks} blocks via ${result.devPath}`);
+      break;
+    }
+
+    case 'byhand': {
+      const { runByHand } = require('../lib/byhand');
+      process.exit(await runByHand({ only: args.only, list: args.list, saveBaseline: args.saveBaseline }));
       break;
     }
 
