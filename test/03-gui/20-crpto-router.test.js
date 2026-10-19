@@ -17,7 +17,7 @@
  *     --ignore-certificate-errors-spki-list for that one certificate, so the
  *     page is a secure context and WebAuthn is allowed.
  *
- * The emulated key is DEBUG v3.0.5 (`-test`), which is "newer than v3.0.4", so
+ * The emulated key is DEBUG v3.1.0 (`-test`), which is "newer than v3.0.4", so
  * the expected outcome is a redirect. A v3.0.4 key staying put is covered by
  * test/version-route.test.js in the router branch; there is no v3.0.4 emulator.
  *
@@ -56,7 +56,7 @@ describe('apps.crp.to router', {
   requires: ['client-access', 'display', 'nwjs'],
   timeoutMs: 240000,
 }, () => {
-  it('sends a v3.0.5 key from apps.crp.to/app/decrypt to apps.onlykey.io/app/decrypt',
+  it('sends a v3.1.0 key from apps.crp.to/app/decrypt to apps.onlykey.io/app/decrypt',
     async ({ device, assert, signal, log, skip }) => {
       if (!fs.existsSync(path.join(ROUTER, 'docs', 'app'))) {
         skip(`no router build at ${ROUTER}/docs - build it with  bash BUILD.sh 1`);
@@ -123,7 +123,7 @@ describe('apps.crp.to router', {
         /* The 2022 decrypt page adds ?type=dv to its own URL on load; the route
          * keeps the query, so that is where it lands. */
         assert.ok(landed && /^https:\/\/apps\.onlykey\.io\/app\/decrypt(\?|$)/.test(landed),
-          `the router did not send the v3.0.5 key to apps.onlykey.io/app/decrypt (pages seen: ${JSON.stringify(seen)})`);
+          `the router did not send the v3.1.0 key to apps.onlykey.io/app/decrypt (pages seen: ${JSON.stringify(seen)})`);
         log(`landed on ${landed}`);
       } finally {
         if (page) { try { page.close(); } catch { /* going */ } }

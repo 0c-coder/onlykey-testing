@@ -2112,7 +2112,7 @@ App's packet and never answered, in all 7 runs. Sent first, or 5 s later, it
 was answered every time. The console shows the swallowed report parsed as
 CTAPHID (`Recv packet` ... `length`, then no `adding a new cid`).
 
-Pre-existing (not a v3.0.5 change). On hardware it means: App open + a FIDO
+Pre-existing (not a v3.1.0 change). On hardware it means: App open + a FIDO
 client's very first request after unlock can be lost; browsers retry INIT, so
 it is probably invisible there, but anything that sends one INIT and waits
 would hang. `17` now opens its CTAPHID channel before its vendor traffic.

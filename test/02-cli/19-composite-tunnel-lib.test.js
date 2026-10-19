@@ -4,7 +4,7 @@
  *
  * 06-composite-ops asks the same device the same questions through the web
  * app's BUILT-IN library, and fails: that library still seals its chunks with
- * the legacy transit (AES-GCM, tagLength 0, a fixed IV), which v3.0.5's
+ * the legacy transit (AES-GCM, tagLength 0, a fixed IV), which v3.1.0's
  * transit v2 correctly refuses - and because the device stages an error only
  * when nothing else is staged, what comes back is the stale OKCONNECT reply,
  * not a refusal (audit #1, 2026-09-28). This file asks through the library
@@ -119,7 +119,7 @@ describe('composite operations over the WebAuthn tunnel, through node-onlykey-li
       log(`status ${connected.status}; transitV2=${connected.capabilities && connected.capabilities.transitV2}`);
       assert.ok(/UNLOCKED/.test(String(connected.status)), `not an unlocked status: ${connected.status}`);
       assert.equal(connected.capabilities.transitV2, true,
-        'the working tree is v3.0.5 - it speaks transit v2');
+        'the working tree is v3.1.0 - it speaks transit v2');
     });
 
   it('signs with the Ed25519 half - sealed request, challenge, v2 result - and it verifies',

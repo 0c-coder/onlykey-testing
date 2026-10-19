@@ -10,7 +10,7 @@
  *
  *   - a LOCKED key answers OKCONNECT with INITIALIZED and no version. The X-Wing
  *     fix rests entirely on that reply having no version in it, and on the lib
- *     then refusing (XWING_VERSION_UNKNOWN) instead of guessing the pre-3.0.5
+ *     then refusing (XWING_VERSION_UNKNOWN) instead of guessing the pre-3.1.0
  *     64-byte shape. If 3.1.0 ever put its version in the locked reply, the
  *     refusal would never fire - and nothing in the lib's suite would notice.
  *   - an UNLOCKED key nobody connected: the lib must learn 3.1.0 over the vendor
@@ -46,7 +46,7 @@ const { composeLib } = require('../../lib/libstack');
 const { x25519guard } = require('node-onlykey-lib/crypto');
 
 const LABEL = 'age:g2-xwing@example.com';
-const XWING_RECIPIENT = 1216;           // pk_M (1184) | pk_X (32), 3.0.5+
+const XWING_RECIPIENT = 1216;           // pk_M (1184) | pk_X (32), 3.1.0+
 const IDENTITY = { gpg: 'okt G2 <g2@example.com>' };
 const KEYTYPE_CURVE25519 = 4;
 const PRIMED = /Encrypted Buffer/g;     // the firmware staged an answer and waits for the press
@@ -144,7 +144,7 @@ describe('node-onlykey-lib okcrypto: X-Wing version first, low-order X25519 refu
       assert.equal(fromUnconnected.mlkemSeed, undefined,
         'the unconnected stack took the SPLIT path (it carries an ML-KEM seed) against a 3.1.0 key');
       assert.bytes(Buffer.from(fromUnconnected.pkX), recipient.subarray(XWING_RECIPIENT - 32),
-        'pk_X is not the tail of the recipient - not the 3.0.5+ [pk_M | pk_X] layout');
+        'pk_X is not the tail of the recipient - not the 3.1.0+ [pk_M | pk_X] layout');
       /*
        * The oracle - see the header. Equal recipients from the two stacks is
        * what "unknown is no longer read as old" means on the wire.

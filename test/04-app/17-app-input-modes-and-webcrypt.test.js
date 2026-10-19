@@ -3,7 +3,7 @@
  * writes the field, the device acknowledges that field by name, and - out of
  * config mode - the key BEHAVES as the form said.
  *
- * These are the settings the v3.0.5 release notes send users to. Web PGP with
+ * These are the settings the v3.1.0 release notes send users to. Web PGP with
  * stored keys is off after the upgrade (field 31 bit 0), and "Allow Webcrypt
  * to use my stored keys (PGP)" is how a person turns it on without a command
  * line; field 30 = "no press" is the unattended-agent setting. A form that

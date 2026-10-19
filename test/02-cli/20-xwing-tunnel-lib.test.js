@@ -10,7 +10,7 @@
  * exactly as a browser will compose it (see 19-composite-tunnel-lib), deriving
  * the recipient for a label, encrypting to it host-side, and asking the device
  * to decapsulate - the chunked OKDECRYPT to the web-and-agent derivation slot
- * with [label32 | ct(1120)] that firmware 3.0.5+ requires.
+ * with [label32 | ct(1120)] that firmware 3.1.0+ requires.
  *
  *   library passes, web app fails  -> the web app's transit handling is wrong
  *   both fail the same way         -> the firmware's reply is suspect
