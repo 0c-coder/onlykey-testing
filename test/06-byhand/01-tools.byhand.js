@@ -44,8 +44,10 @@ const pinButtons = (pin) => pin.split('').map((d) => `button ${d}`).join(', ');
 const sshKey = (text) => (/(ssh-ed25519 [A-Za-z0-9+/=]+)/.exec(text) || [])[1];
 
 /* The version a tool printed on stdout. Not \S*: python-onlykey's DEBUG log (stderr)
- * carries the raw reply, NUL padding and all, and must not be read as the answer. */
-const printedVersion = (out) => (/v\d+\.\d+\.\d+(?:-[A-Za-z0-9]+)?/.exec(out.stdout) || [])[0];
+ * carries the raw reply, NUL padding and all, and must not be read as the answer.
+ * Every dash-separated part is kept: the maintainer's builds report
+ * v3.1.0-test-9fceea1-37aa531c, and stopping at the first part compared v3.1.0-test. */
+const printedVersion = (out) => (/v\d+\.\d+\.\d+(?:-[A-Za-z0-9]+)*/.exec(out.stdout) || [])[0];
 
 /*
  * The slot labels a tool printed, as one comparable list: python pads an
