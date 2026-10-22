@@ -10,6 +10,8 @@
  *
  * Run on a hard key (--hardware): the target's own PINs are the fixture's, and the backup's
  * passphrase is set on it first, because the device decrypts a backup with ITS backup key.
+ * Each CLI runs inside device.lendToClient(), so the kit and the CLI never hold the key's
+ * client interfaces at the same time; the kit keeps the console for presses and challenges.
  * Writes OKT_UPGRADE_DIR/target-<firmware>-<platform>.json beside the source record.
  */
 'use strict';
@@ -35,7 +37,7 @@ const PLAINTEXT = 'sealed to the key the old firmware stored';
 
 describe('upgrade path, phase B: the old key\'s backup restored onto the new firmware', {
   state: 'initialized',
-  requires: ['crypto', 'client-access', 'webapp-lib'],
+  requires: ['crypto', 'client-lend', 'webapp-lib'],
   timeoutMs: 900000,
 }, () => {
   let source = null;
@@ -96,8 +98,8 @@ describe('upgrade path, phase B: the old key\'s backup restored onto the new fir
       /* The reboot is the device's only "done": a refused restore stays up and says so on the vendor channel. */
       const before = device.generation;
       const vendorSince = device.mark(IFACE.VENDOR);
-      const r = await cli.run('onlykey-cli', ['restore', path.join(OUT, source.backup.file)],
-        { timeoutMs: 180000, signal, env: VENV_PATH });
+      const r = await device.lendToClient(() => cli.run('onlykey-cli', ['restore', path.join(OUT, source.backup.file)],
+        { timeoutMs: 180000, signal, env: VENV_PATH }));
       assert.equal(r.code, 0, r.stderr.slice(-800) || r.stdout.slice(-800));
       log(`cli: ${r.stdout.trim().split('\n').slice(-2).join(' | ')}`);
       try {
@@ -120,8 +122,9 @@ describe('upgrade path, phase B: the old key\'s backup restored onto the new fir
     assert.equal((await device.status({ signal })).state, 'unlocked');
   });
 
-  it('derives the same SSH key onlykey-agent derived on the old firmware', async ({ assert, log, signal }) => {
-    const r = await cli.run('onlykey-agent', [source.ssh.identity], { timeoutMs: 60000, signal, env: VENV_PATH });
+  it('derives the same SSH key onlykey-agent derived on the old firmware', async ({ device, assert, log, signal }) => {
+    const r = await device.lendToClient(() => cli.run('onlykey-agent', [source.ssh.identity],
+      { timeoutMs: 60000, signal, env: VENV_PATH }));
     assert.equal(r.code, 0, r.stderr.slice(-800));
     const key = (r.stdout.match(/(ssh-ed25519 [A-Za-z0-9+/=]+)/) || [])[1];
     record.ssh = { identity: source.ssh.identity, key, same: key === source.ssh.key };
@@ -132,9 +135,9 @@ describe('upgrade path, phase B: the old key\'s backup restored onto the new fir
 
   it('derives the same GnuPG identity onlykey-gpg derived on the old firmware', async ({ device, assert, log, signal }) => {
     const homedir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'okt-upgrade-b-')), 'gnupg');
-    const init = await pqc.confirmFromConsole(device, () => cli.run('onlykey-gpg',
+    const init = await device.lendToClient(() => pqc.confirmFromConsole(device, () => cli.run('onlykey-gpg',
       ['init', source.gpg.userId, '-t', source.gpg.time, '--homedir', homedir],
-      { timeoutMs: 240000, signal, env: VENV_PATH }), { signal });
+      { timeoutMs: 240000, signal, env: VENV_PATH }), { signal }));
     assert.equal(init.code, 0, init.stderr.slice(-1500) || init.stdout.slice(-1500));
     const list = await cli.runHost('gpg', ['--homedir', homedir, '--with-colons', '--list-keys'], { timeoutMs: 30000, signal });
     const fprs = list.stdout.split('\n').filter((l) => l.startsWith('fpr:')).map((l) => l.split(':')[9]);
