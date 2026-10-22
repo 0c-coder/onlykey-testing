@@ -99,7 +99,8 @@ describe('WebAuthn tunnel',
         assert.match(text, /^UNLOCKED/, `unexpected status text: ${JSON.stringify(text)}`);
         assert.match(text, /v\d+\.\d+\.\d+/, 'no firmware version in the tunnelled status');
         assert.equal(text, vendorVersion,
-          'the tunnel and the vendor interface disagree about the firmware version');
+          'the tunnel and the vendor interface disagree about the firmware version: tunnel '
+          + `${JSON.stringify(text)} (${text.length}), vendor ${JSON.stringify(vendorVersion)} (${String(vendorVersion).length})`);
       });
 
     it('generates a fresh key for every handshake', async ({ device, assert, log, signal }) => {
