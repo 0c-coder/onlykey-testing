@@ -47,15 +47,20 @@ describe('upgrade path, phase B: the old key\'s backup restored onto the new fir
     JSON.stringify(record, null, 2));
 
   /* The web app's own PGP engine over the device, as 03-gui/08 drives it: the pages' code, not ours. */
-  async function engine(device, { signal }) {
+  async function engine(device, { signal, log }) {
+    log('engine: connecting the web app library to the key');
     const { okcrypto, window, app } = await webenv.browserLib(device, { signal });
+    log('engine: connected');
     const createPgpEngine = webenv.webappModule('onlykey-lib/pgp-engine.js');
-    return createPgpEngine({
+    const pgp = createPgpEngine({
       app,
       okLib: { okcrypto: async () => okcrypto },
       getKey: (value) => Promise.resolve(value),
       window,
     });
+    /* The page's own status line: where a stalled operation stopped, in the page's words. */
+    pgp.on('status', (message) => log(`engine: ${String(message).slice(0, 160)}`));
+    return pgp;
   }
   const settle = (promise, reject) => {
     if (promise && typeof promise.catch === 'function') promise.catch(reject);
@@ -151,6 +156,8 @@ describe('upgrade path, phase B: the old key\'s backup restored onto the new fir
 
   it('decrypts, through the web app\'s engine, a message sealed to the stored key (RSA slot 1)',
     async ({ device, assert, log, signal }) => {
+      /* The library first: it installs the browser crypto openpgp.js encrypts with (03-gui/08's order). */
+      const pgp = await engine(device, { signal, log });
       const openpgp = webenv.openpgp();
       const armoredPub = fs.readFileSync(path.join(OUT, 'pgp-pub.asc'), 'utf8');
       const publicKey = await openpgp.readKey({ armoredKey: armoredPub });
@@ -160,8 +167,9 @@ describe('upgrade path, phase B: the old key\'s backup restored onto the new fir
         encryptionKeys: publicKey,
         format: 'armored',
       });
-      const pgp = await engine(device, { signal });
+      log(`sealed ${String(message).length} bytes to the stored key`);
       pgp._$mode('Decrypt Only');
+      log('engine: Decrypt Only, starting');
       device.log.clear();
       const text = await pqc.confirmFromConsole(device, () => decryptWith(pgp, '', armoredPub, String(message)), { signal });
       record.stored = { fingerprint: source.stored.fingerprint, decrypt: String(text) === PLAINTEXT };
@@ -174,7 +182,7 @@ describe('upgrade path, phase B: the old key\'s backup restored onto the new fir
     async ({ device, assert, log, signal }) => {
       const openpgp = webenv.openpgp();
       const armoredPub = fs.readFileSync(path.join(OUT, 'pgp-pub.asc'), 'utf8');
-      const pgp = await engine(device, { signal });
+      const pgp = await engine(device, { signal, log });
       pgp._$mode('Sign Only');
       device.log.clear();
       const armored = await pqc.confirmFromConsole(device, () => encryptWith(pgp, '', armoredPub, PLAINTEXT), { signal });

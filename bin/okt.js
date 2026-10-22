@@ -27,6 +27,18 @@
  */
 'use strict';
 
+/*
+ * A bigger libuv thread pool, set before anything uses it.
+ *
+ * node-hid's async reads each hold a pool thread for as long as the handle is
+ * open, and the pool is 4 threads by default. The hardware adapter opens four
+ * interfaces on Linux, so nothing else that runs on the pool - webcrypto's
+ * digests, async fs, zlib - ever gets a thread: openpgp.readKey() waited
+ * forever against a hard key and returned at once on the emulator (whose HID
+ * lives in the device host, another process). A CLI child has its own pool.
+ */
+if (!process.env.UV_THREADPOOL_SIZE) process.env.UV_THREADPOOL_SIZE = '16';
+
 const { EXIT } = require('../lib/report');
 
 function usage() {
