@@ -9,10 +9,8 @@
  * copy is 896 bytes - 384 past the buffer. RESTORE() then meets key type 7 in an RSA record,
  * which it does not know, and stops: "Error key configuration backup file format incorrect".
  *
- * This file asserts what SHOULD happen (the slot's 160 bytes are backed up, the backup
- * restores) and logs what does. On the RC it fails; that failure is the proof. The DEBUG
- * console prints the bytes backup() copies per slot (byteprint after "Backing up RSA Key
- * Number N"), which is how the copy is measured - on the emulator and on a hard key alike.
+ * This file asserts what SHOULD happen (the backup restores) and logs what does, with the
+ * backup's length. On the RC it fails; that failure is the proof.
  */
 const crypto = require('node:crypto');
 const { describe, it } = require('../../lib/harness');
@@ -25,15 +23,6 @@ const RSA_SLOT = 1;
 const PQC_PGP_KEYTYPE_BYTE = 0x67; /* KEYTYPE_PQC_PGP | DECRYPT | SIGN, as Edge's composite test loads it */
 const PASSPHRASE = 'okt f9 pqc backup passphrase';
 const sha256 = (b) => crypto.createHash('sha256').update(b).digest();
-
-/* the bytes the console printed between two markers: byteprint() writes "XX " per byte */
-function bytesPrinted(text, from, to) {
-  const a = text.indexOf(from);
-  if (a < 0) return -1;
-  const b = text.indexOf(to, a + from.length);
-  const span = text.slice(a + from.length, b < 0 ? undefined : b);
-  return (span.match(/(?:^|\s)[0-9A-F]{1,2}(?=\s)/g) || []).length;
-}
 
 describe('F9: a backup of a key holding a PQC-PGP key', { state: 'initialized', timeoutMs: 900000, requires: ['crypto', 'keyboard-capture'] }, () => {
   it('backs up the slot\'s 160 bytes, and the backup restores', async ({ device, assert, signal, log }) => {
@@ -76,9 +65,12 @@ describe('F9: a backup of a key holding a PQC-PGP key', { state: 'initialized', 
     const parsed = backup.parse(device.keystrokes);
     assert.ok(parsed && parsed.data.length, 'no backup data');
 
-    const consoleText = device.log.tail(2000000);
-    const copied = bytesPrinted(consoleText, 'Backing up RSA Key Number 1', 'Backing up RSA Key Number 2');
-    log(`backup: ${parsed.data.length} bytes; backup() copied ${copied} bytes for RSA slot ${RSA_SLOT} (its key is 160)`);
+    /*
+     * The backup's own length is the measure of what backup() copied for the slot: the RC's
+     * is 736 bytes longer than a fixed build's for the same key set (896 - 160). The console
+     * cannot be counted for it - the slot's AES decrypt prints its own bytes in between.
+     */
+    log(`backup: ${parsed.data.length} bytes`);
 
     /* the restore onto this device (config mode) */
     await device.enterConfigMode(PINS.primary, { signal });
@@ -93,7 +85,6 @@ describe('F9: a backup of a key holding a PQC-PGP key', { state: 'initialized', 
     if (/Successfully loaded backup/.test(answer)) await device.waitForReboot({ from: gen, timeoutMs: 90000, signal });
     else await device.restart({ signal });
 
-    assert.equal(copied, 160, `backup() copied ${copied} bytes for a 160-byte PQC-PGP key from a 512-byte buffer`);
     assert.match(answer, /Successfully loaded backup/, `the backup does not restore: ${answer.trim()}`);
   });
 });
