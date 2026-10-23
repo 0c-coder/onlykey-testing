@@ -35,7 +35,7 @@ const fs = require('fs');
 const net = require('net');
 const os = require('os');
 const path = require('path');
-const { spawn, spawnSync } = require('child_process');
+const { spawn, spawnSync, execFile } = require('child_process');
 
 const ROOT = path.resolve(process.env.OKT_ROOT || path.join(__dirname, '..', '..'));
 const STATE = process.env.OKT_ELEVATED_FILE || path.join(os.homedir(), '.okt-elevated.json');
@@ -89,7 +89,53 @@ function serve(test) {
   let idle = null;
   let running = 0;
   let nextId = 1;
-  const jobs = new Map();            // id -> { child, argv, started }
+  const jobs = new Map();            // id -> { child, argv, started, pids }
+
+  /*
+   * Every process a job starts, recorded as it appears. taskkill /T walks parent links, and Git
+   * Bash breaks them: when an intermediate MSYS process exits, its children keep a parent id
+   * that no longer exists, so a cancelled kit run left timeout.exe -> node.exe (holding the key)
+   * and tee.exe running. A snapshot every 2 s while a job runs catches each descendant while
+   * its parent is still alive; cancel then kills all of them by pid.
+   */
+  /** Windows pids of an MSYS process and all its MSYS descendants (and its process group). */
+  function msysFamily(rootPid) {
+    const r = spawnSync(PROGRAMS.bash, ['-c', 'ps'], { encoding: 'utf8', windowsHide: true });
+    const rows = String(r.stdout || '').split(/\r?\n/)
+      .map((l) => /^\s*[A-Z]?\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/.exec(l))
+      .filter(Boolean)
+      .map((m) => ({ pid: +m[1], ppid: +m[2], pgid: +m[3], winpid: +m[4] }));
+    const family = new Set([rootPid]);
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const row of rows) {
+        if (!family.has(row.pid) && (family.has(row.ppid) || row.pgid === rootPid)) { family.add(row.pid); grew = true; }
+      }
+    }
+    return rows.filter((row) => family.has(row.pid) && row.winpid !== process.pid).map((row) => row.winpid);
+  }
+
+  let tracking = false;
+  function trackDescendants() {
+    if (tracking || !jobs.size || process.platform !== 'win32') return;
+    tracking = true;
+    execFile('powershell', ['-NoProfile', '-Command',
+      'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId)" }'],
+    { windowsHide: true, timeout: 15000 }, (err, out) => {
+      tracking = false;
+      if (err || !out) return;
+      const procs = out.trim().split(/\r?\n/).map((l) => l.trim().split(/\s+/).map(Number));
+      for (const j of jobs.values()) {
+        for (let grew = true; grew;) {
+          grew = false;
+          for (const [pid, ppid] of procs) {
+            if (j.pids.has(ppid) && !j.pids.has(pid)) { j.pids.add(pid); grew = true; }
+          }
+        }
+      }
+    });
+  }
+  setInterval(trackDescendants, 2000).unref();
   const armIdle = () => {
     clearTimeout(idle);
     idle = setTimeout(() => { if (!running) shutdown('idle'); else armIdle(); }, IDLE_MS);
@@ -137,7 +183,15 @@ function serve(test) {
         if (!j) continue;
         /* The whole tree: a kit run is bash -> node -> python / nw, and killing bash alone leaves them. */
         if (process.platform === 'win32') {
-          spawnSync('taskkill', ['/PID', String(j.child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+          /*
+           * A bash job: its family from MSYS's own table, read BEFORE anything is killed. ps keeps
+           * the real parent of every Git Bash process (Windows loses it when a fork exits), and
+           * lists each one's Windows pid. GNU timeout moves itself into a new process group, so
+           * the group alone is not enough - the tree is walked from the script's bash down.
+           */
+          const msys = j.pgid ? msysFamily(j.pgid) : [];
+          const pids = [...new Set([...j.pids, ...msys])];
+          spawnSync('taskkill', ['/T', '/F', ...pids.flatMap((p) => ['/PID', String(p)])], { stdio: 'ignore', windowsHide: true });
         } else {
           j.child.kill('SIGTERM');
         }
@@ -168,15 +222,30 @@ function serve(test) {
     audit(`RUN ${prog} ${JSON.stringify(args)} cwd=${cwd}`);
     running++;
     /* No environment from the request: NODE_OPTIONS or BASH_ENV would get past the script rule. */
-    const child = spawn(exe, args, { cwd, env: process.env, windowsHide: true });
+    /*
+     * A bash job runs as its own MSYS process group (set -m puts a background job in a new
+     * group) and reports the group on a marker line, so cancel can kill the whole family with
+     * MSYS's kill: Git Bash's forks re-parent its processes away from anything Windows can
+     * walk. The wrapper waits for the script and exits with its code.
+     */
+    const WRAP = 'set -m; bash "$0" "$@" & pg=$!; echo "@@OKT_PGID $pg" >&2; wait $pg';
+    const spawnArgs = prog === 'bash' ? ['-c', WRAP, ...args] : args;
+    const child = spawn(exe, spawnArgs, { cwd, env: process.env, windowsHide: true });
     const id = nextId++;
-    jobs.set(id, { child, argv: req.argv, started: stamp() });
+    jobs.set(id, { child, argv: req.argv, started: stamp(), pids: new Set([child.pid]) });
     send(sock, { t: 'job', id });
     /* Shown in the elevated window too, so whoever keeps it open sees every job as it runs. */
     console.log(`
 === ${stamp()} RUN ${prog} ${args.join(' ')}  (cwd ${cwd})`);
     child.stdout.on('data', (d) => { process.stdout.write(d); send(sock, { t: 'out', d: d.toString('utf8') }); });
-    child.stderr.on('data', (d) => { process.stderr.write(d); send(sock, { t: 'err', d: d.toString('utf8') }); });
+    child.stderr.on('data', (d) => {
+      let text = d.toString('utf8');
+      const m = /@@OKT_PGID (\d+)\r?\n?/.exec(text);
+      if (m) { const j = jobs.get(id); if (j) j.pgid = Number(m[1]); text = text.replace(m[0], ''); }
+      if (!text) return;
+      process.stderr.write(text);
+      send(sock, { t: 'err', d: text });
+    });
     child.on('error', (e) => { send(sock, { t: 'err', d: `spawn failed: ${e.message}\n` }); });
     child.on('close', (code, signal) => {
       running--;
