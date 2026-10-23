@@ -8,6 +8,7 @@
  *                                      exit code is the job's
  *   okt-elevated jobs                 the jobs running now, by number
  *   okt-elevated cancel <n|all>       stop a job and everything it started (taskkill /T)
+ *   okt-elevated reload               start a fresh copy on the current code (new window), then exit
  *   okt-elevated status | stop
  *
  * WHY. On Windows the key's FIDO interface is visible only to an elevated program, so the
@@ -202,6 +203,27 @@ function serve(test) {
       send(sock, { t: 'end', code: done.length ? 0 : 1, out: done.length ? `cancelled job ${done.join(', ')}` : `no such job: ${req.id}` });
       return sock.end();
     }
+    if (req.op === 'reload') {
+      /*
+       * A new version of this file takes effect without anyone at the keyboard: the copy is
+       * started from this elevated process, so it is elevated too, in a window of its own. This
+       * one gives up the port and token file first, so the new one's are the only ones.
+       */
+      if (running) {
+        send(sock, { t: 'end', code: 1, error: `${running} job(s) running - cancel or wait first` });
+        return sock.end();
+      }
+      audit('RELOAD requested');
+      send(sock, { t: 'end', code: 0, out: 'reloading: a new window takes over' });
+      sock.end();
+      return shutdown('reload', () => {
+        const args = [__filename, 'serve', ...(test ? ['--test'] : [])];
+        /* start: a console window of its own, so the jobs it runs can be watched there. */
+        /* start takes its first argument as the title only when quoted, so the line is written whole. */
+        const line = ['start', '"okt-elevated"', ...[process.execPath, ...args].map((x) => '"' + x + '"')].join(' ');
+        spawn('cmd.exe', ['/c', line], { cwd: process.cwd(), detached: true, stdio: 'ignore', windowsVerbatimArguments: true }).unref();
+      });
+    }
     if (req.op === 'stop') {
       audit('STOP requested');
       send(sock, { t: 'end', code: 0, out: 'stopping' });
@@ -230,7 +252,12 @@ function serve(test) {
      */
     const WRAP = 'set -m; bash "$0" "$@" & pg=$!; echo "@@OKT_PGID $pg" >&2; wait $pg';
     const spawnArgs = prog === 'bash' ? ['-c', WRAP, ...args] : args;
-    const child = spawn(exe, spawnArgs, { cwd, env: process.env, windowsHide: true });
+    /*
+     * In this window's console, not windowsHide. With no console at all, every kit run on a hard
+     * key crashed node inside node-hid on a device open or close (V8 "array_buffer_allocator",
+     * once a segfault) - 3 of 3 here - while the same runs from an administrator console did not.
+     */
+    const child = spawn(exe, spawnArgs, { cwd, env: process.env });
     const id = nextId++;
     jobs.set(id, { child, argv: req.argv, started: stamp(), pids: new Set([child.pid]) });
     send(sock, { t: 'job', id });
@@ -260,12 +287,12 @@ function serve(test) {
     /* A client that disconnects does not stop the job: a kit run must finish or clean up itself. */
   }
 
-  function shutdown(why) {
+  function shutdown(why, then) {
     audit(`SHUTDOWN (${why})`);
     try { fs.unlinkSync(STATE); } catch { /* already gone */ }
     console.log(`okt-elevated: stopped (${why})`);
-    server.close();
-    setTimeout(() => process.exit(0), 200);
+    server.close(() => { if (then) then(); setTimeout(() => process.exit(0), 300); });
+    if (!then) setTimeout(() => process.exit(0), 200);
   }
 
   server.listen(0, '127.0.0.1', () => {
@@ -314,7 +341,7 @@ function client(req) {
 const [cmd, ...rest] = process.argv.slice(2);
 if (cmd === 'serve') serve(rest.includes('--test'));
 else if (cmd === 'run') client({ op: 'run', argv: rest, cwd: process.env.OKT_ELEVATED_CWD });
-else if (cmd === 'status' || cmd === 'stop' || cmd === 'jobs') client({ op: cmd });
+else if (cmd === 'status' || cmd === 'stop' || cmd === 'jobs' || cmd === 'reload') client({ op: cmd });
 else if (cmd === 'cancel' && rest[0]) client({ op: 'cancel', id: rest[0] });
 else {
   console.error('usage: okt-elevated serve | run <bash|node> <script inside the workspace> [args...] | jobs | cancel <n|all> | status | stop');
