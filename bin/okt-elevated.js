@@ -28,6 +28,11 @@
  *
  * Why TCP and not a named pipe: node cannot set a pipe's DACL, and the default one gives a
  * non-elevated process of the same user read access only, so it could not send a request.
+ *
+ * ON LINUX (the firmware box, Brad, 2026-10-23: "a script like the elevated script that runs test
+ * jobs, one i can run and monitor") it is the same job runner without the elevation: started by
+ * hand in a terminal that stays open, jobs handed to it over ssh, every job's output streaming in
+ * that terminal, `jobs` and `cancel` as on Windows. Jobs run with the starting user's rights.
  */
 'use strict';
 
@@ -42,8 +47,9 @@ const ROOT = path.resolve(process.env.OKT_ROOT || path.join(__dirname, '..', '..
 const STATE = process.env.OKT_ELEVATED_FILE || path.join(os.homedir(), '.okt-elevated.json');
 const AUDIT = path.join(path.dirname(STATE), 'okt-elevated.log');
 const IDLE_MS = (parseInt(process.env.OKT_ELEVATED_IDLE_MIN, 10) || 240) * 60000;
+const WIN = process.platform === 'win32';
 const PROGRAMS = {
-  bash: process.env.OKT_BASH || 'C:\\Program Files\\Git\\bin\\bash.exe',
+  bash: process.env.OKT_BASH || (WIN ? 'C:\\Program Files\\Git\\bin\\bash.exe' : '/bin/bash'),
   node: process.execPath,
 };
 
@@ -56,8 +62,9 @@ function isElevated() {
   return spawnSync('net', ['session'], { stdio: 'ignore', windowsHide: true }).status === 0;
 }
 
-/* A Git Bash path (/c/Users/...) or a Windows one, as an absolute Windows path. */
+/* A Git Bash path (/c/Users/...) or a Windows one, as an absolute Windows path. Elsewhere: as given. */
 function toWindowsPath(p) {
+  if (!WIN) return path.resolve(p);
   const m = /^\/([a-zA-Z])\/(.*)$/.exec(p);
   return path.resolve(m ? `${m[1]}:/${m[2]}` : p);
 }
@@ -82,6 +89,9 @@ function refusal(req) {
 function serve(test) {
   if (test) {
     console.log('okt-elevated: --test - NOT elevated; jobs run with this shell\'s rights (protocol self-test only)');
+  } else if (!WIN) {
+    /* Linux: a plain job runner - the key's hidraw nodes are open to this user (udev), nothing to elevate */
+    console.log(`okt-elevated: Linux job runner - jobs run as ${os.userInfo().username}`);
   } else if (!isElevated()) {
     console.error('okt-elevated: this shell is not elevated - start it with "Run as administrator"');
     process.exit(1);
@@ -194,7 +204,15 @@ function serve(test) {
           const pids = [...new Set([...j.pids, ...msys])];
           spawnSync('taskkill', ['/T', '/F', ...pids.flatMap((p) => ['/PID', String(p)])], { stdio: 'ignore', windowsHide: true });
         } else {
-          j.child.kill('SIGTERM');
+          /*
+           * Linux: the job's own process group (spawned detached) and the script's (set -m in the
+           * wrapper), TERM first so a kit run can close the key, then KILL what is left after 3 s -
+           * a node holding the key must not outlive the cancel.
+           */
+          const groups = [j.child.pid, j.pgid].filter(Boolean);
+          const signal = (sig) => { for (const g of groups) { try { process.kill(-g, sig); } catch { /* already gone */ } } };
+          signal('SIGTERM');
+          setTimeout(() => signal('SIGKILL'), 3000).unref();
         }
         audit(`CANCEL job ${id} pid ${j.child.pid} ${JSON.stringify(j.argv)}`);
         console.log(`=== ${stamp()} CANCEL job ${id}  ${j.argv.join(' ')}`);
@@ -218,6 +236,11 @@ function serve(test) {
       sock.end();
       return shutdown('reload', () => {
         const args = [__filename, 'serve', ...(test ? ['--test'] : [])];
+        if (!WIN) {
+          /* Linux: the new copy takes over this same terminal (its output goes where this one's did) */
+          spawn(process.execPath, args, { cwd: process.cwd(), detached: true, stdio: 'inherit' }).unref();
+          return;
+        }
         /* start: a console window of its own, so the jobs it runs can be watched there. */
         /* start takes its first argument as the title only when quoted, so the line is written whole. */
         const line = ['start', '"okt-elevated"', ...[process.execPath, ...args].map((x) => '"' + x + '"')].join(' ');
@@ -257,7 +280,8 @@ function serve(test) {
      * key crashed node inside node-hid on a device open or close (V8 "array_buffer_allocator",
      * once a segfault) - 3 of 3 here - while the same runs from an administrator console did not.
      */
-    const child = spawn(exe, spawnArgs, { cwd, env: process.env });
+    /* Linux: detached, so the job is its own process group and cancel can end all of it */
+    const child = spawn(exe, spawnArgs, { cwd, env: process.env, ...(WIN ? {} : { detached: true }) });
     const id = nextId++;
     jobs.set(id, { child, argv: req.argv, started: stamp(), pids: new Set([child.pid]) });
     send(sock, { t: 'job', id });
