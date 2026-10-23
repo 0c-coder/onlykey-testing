@@ -71,6 +71,12 @@ describe('F9: a backup of a key holding a PQC-PGP key', { state: 'initialized', 
      * cannot be counted for it - the slot's AES decrypt prints its own bytes in between.
      */
     log(`backup: ${parsed.data.length} bytes`);
+    /* OKT_F9_SAVE=<file>: keep the typed backup, for a restore through onlykey-cli on a machine
+     * that cannot capture one (Windows owns the keyboard) */
+    if (process.env.OKT_F9_SAVE) {
+      require('node:fs').writeFileSync(process.env.OKT_F9_SAVE, device.keystrokes);
+      log(`typed backup kept in ${process.env.OKT_F9_SAVE} (passphrase: ${PASSPHRASE})`);
+    }
 
     /* the restore onto this device (config mode) */
     await device.enterConfigMode(PINS.primary, { signal });
