@@ -25,7 +25,7 @@ const PASSPHRASE = 'okt f9 pqc backup passphrase';
 const sha256 = (b) => crypto.createHash('sha256').update(b).digest();
 
 describe('F9: a backup of a key holding a PQC-PGP key', { state: 'initialized', timeoutMs: 900000, requires: ['crypto', 'keyboard-capture'] }, () => {
-  it('backs up the slot\'s 160 bytes, and the backup restores', async ({ device, assert, signal, log }) => {
+  it('the backup of a key holding a PQC-PGP key restores', async ({ device, assert, signal, log }) => {
     /* a backup passphrase (config mode), as Edge's backup test sets one */
     await device.ensureUnlocked(PINS.primary, { signal });
     await device.enterConfigMode(PINS.primary, { signal });
