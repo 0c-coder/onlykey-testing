@@ -25,7 +25,12 @@ const loaded = named
 /* a hard key built by build-hardkey.sh is a DEBUG build: the kit drives it through its console */
 const ctx = pluginCtx({ debug: true });
 
-describe('firmware plugins on a hard key (side-loaded tests)', { state: 'initialized', timeoutMs: 300000, requires: ['hard-key'] }, () => {
+/*
+ * 15 minutes a test, as 10-backup-restore: a plugin test may wait for a whole typed
+ * backup, which a hard key types at keyboard speed (minutes, where the emulator takes
+ * seconds).
+ */
+describe('firmware plugins on a hard key (side-loaded tests)', { state: 'initialized', timeoutMs: 900000, requires: ['hard-key'] }, () => {
   for (const p of loaded) require(p.file)({ it }, ctx);
   if (!loaded.length) {
     it('side-loaded plugin tests', async ({ skip }) => {
