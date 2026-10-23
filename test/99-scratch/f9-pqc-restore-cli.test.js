@@ -26,16 +26,21 @@ describe('F9: a backup holding a PQC-PGP key, restored with onlykey-cli', { stat
     assert.ok(fs.existsSync(FILE), `no backup file at ${FILE}`);
     await device.ensureUnlocked(PINS.primary, { signal });
     await device.enterConfigMode(PINS.primary, { signal });
-    let since = device.mark(IFACE.VENDOR);
+    const since = device.mark(IFACE.VENDOR);
     device.sendVendor({ msg: okmsg.MSG.OKSETPRIV, slot: 131, payload: Buffer.concat([Buffer.from([161]), crypto.createHash('sha256').update(PASSPHRASE, 'utf8').digest()]) });
     assert.match(okmsg.text(await device.waitHid(IFACE.VENDOR, { since, match: /Successfully|Error/, timeoutMs: 10000, signal })), /Successfully set Backup Passphrase/);
 
+    /*
+     * The vendor channel is the CLI's during the lend; the kit keeps the debug console, where a
+     * DEBUG build prints the restore's answer either way ("Successfully loaded backup", or the
+     * format error). Cleared first, so only this restore's answer is read.
+     */
     const before = device.generation;
-    since = device.mark(IFACE.VENDOR);
+    device.log.clear();
     const r = await device.lendToClient(() => cli.run('onlykey-cli', ['restore', FILE], { timeoutMs: 180000, signal, env: cli.venvPathEnv() }));
     log(`cli exit ${r.code}: ${(r.stdout + r.stderr).trim().split('\n').slice(-2).join(' | ').slice(0, 200)}`);
     await device.waitForReboot({ from: before, timeoutMs: 90000, signal });
-    const said = String((device.hidSince && device.hidSince(IFACE.VENDOR, since)) || '') + ' ' + r.stdout + ' ' + r.stderr;
+    const said = `${device.log.tail(200000)} ${r.stdout} ${r.stderr}`;
     log(`the key said: ${(said.match(/Successfully loaded backup|Error[^\n|]*/) || ['(nothing recognised)'])[0]}`);
     await device.waitReady({ signal });
     await device.ensureUnlocked(PINS.primary, { signal });
