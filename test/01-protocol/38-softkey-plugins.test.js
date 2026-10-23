@@ -72,7 +72,8 @@ const sideLoaded = plugins
  * disk stages, not what the kit is talking to - a hardware run with an Edge
  * emulator build still on disk would otherwise send Edge's tests (a backup and a
  * restore among them) to a hard key that has no Edge. A plugin a hard key may get
- * one day (Edge, maybe; never OKGETCONFIG) gets its own hard-key gate then.
+ * one day (Edge, maybe; never OKGETCONFIG) gets its own hard-key gate then - the
+ * second describe below.
  */
 describe('soft-key firmware plugins on the emulator (side-loaded tests)', { state: 'initialized', timeoutMs: 300000, requires: ['emulated'] }, () => {
   for (const p of sideLoaded) require(p.file)({ it }, ctx);
@@ -81,6 +82,35 @@ describe('soft-key firmware plugins on the emulator (side-loaded tests)', { stat
       skip(plugins.length
         ? `the emulator stages ${plugins.join(', ')}, but no tests/kit.test.js was found under ${dir || '(no pluginsDir recorded)'}`
         : 'this emulator was built without plugins (e.g. OKEMU_PLUGINS=hello npm run rebuild in the emulator)');
+    });
+  }
+});
+
+/*
+ * The HARD-KEY gate: a developer key flashed with a plugin build (Edge's
+ * tools/build-hardkey.sh). A hard key carries no build.json and the kit cannot
+ * ask it which plugins it has, so the person running the kit NAMES them:
+ *   OKT_HARDKEY_PLUGINS=edge  OKT_HARDKEY_PLUGINS_DIR=<the plugins folder>
+ * and nothing is guessed - unnamed, nothing runs. Naming a plugin the key does not
+ * have sends its tests (a backup and a restore among them) to a key without it,
+ * which is why the opt-in is explicit and per run. Presses go through the debug
+ * console, as for every hard-key test.
+ */
+const hardNamed = (process.env.OKT_HARDKEY_PLUGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
+const hardDir = process.env.OKT_HARDKEY_PLUGINS_DIR || null;
+const hardLoaded = hardNamed
+  .map((name) => ({ name, file: hardDir ? path.join(hardDir, name, 'tests', 'kit.test.js') : null }))
+  .filter((p) => p.file && fs.existsSync(p.file));
+
+describe('firmware plugins on a hard key (side-loaded tests)', { state: 'initialized', timeoutMs: 300000, requires: ['hard-key'] }, () => {
+  /* a hard key built by build-hardkey.sh is a DEBUG build: the kit drives it through its console */
+  const hardCtx = { ...ctx, build: { debug: true } };
+  for (const p of hardLoaded) require(p.file)({ it }, hardCtx);
+  if (!hardLoaded.length) {
+    it('side-loaded plugin tests', async ({ skip }) => {
+      skip(hardNamed.length
+        ? `OKT_HARDKEY_PLUGINS names ${hardNamed.join(', ')}, but no tests/kit.test.js was found under ${hardDir || '(set OKT_HARDKEY_PLUGINS_DIR)'}`
+        : 'no plugins named for this hard key (OKT_HARDKEY_PLUGINS=edge OKT_HARDKEY_PLUGINS_DIR=<plugins folder>, for a key flashed with a plugin build)');
     });
   }
 });
