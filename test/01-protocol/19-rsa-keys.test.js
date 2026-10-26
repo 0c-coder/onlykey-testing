@@ -81,6 +81,7 @@ const { describe, it } = require('../../lib/harness');
 const { IFACE, okmsg } = require('../../lib/device');
 const { PINS } = require('../../lib/config');
 const pqc = require('../../lib/pqc');
+const { firmwareFixes } = require('../../lib/firmware-fixes');
 
 const REPORT = 64;
 const CHUNK = 57;                       // payload bytes per report, buffer[7..63]
@@ -499,13 +500,20 @@ describe('classic RSA keys in RSA slots', {
         `expected the invalid-slot refusal, got: ${invalid.said}`);
     });
 
-  it('OKWIPEPRIV clears an RSA slot in flash and leaves its key type in EEPROM',
+  it('OKWIPEPRIV clears an RSA slot - with RC fix 0013 its key type too, so it reads as empty',
     async ({ device, assert, signal, log }) => {
       /*
        * SURFACE: vendor throughout.
        *
-       * PINNING A BREAKAGE, so this test is expected to FAIL the day it is
-       * fixed - and that is the point of it. rsa_priv_flash() handles `wipe`
+       * TWO FIRMWARES, ONE TEST. RC fix 0013 (node-onlykey-emulator
+       * scripts/versions/patches-3.1.0/0013-libraries-okcore-rsa-wipe-clears-type) clears
+       * the key type on an RSA wipe; firmware without it (3.1.0 as the maintainer ships
+       * it, until a pin carries the fix) keeps the type, which this test pinned below.
+       * Which one is answering: an emulator says in .stage/build.json `fixes`; a hard
+       * key cannot, so whoever flashed it says in OKT_FIRMWARE_FIXES (e.g. 0012,0013) -
+       * unset is upstream as shipped. When a pin carries 0013, the second branch goes.
+       *
+       * WITHOUT THE FIX (pinned): rsa_priv_flash() handles `wipe`
        * first and returns before it ever reaches okeeprom_eeset_rsakey(), so the
        * flash region is zeroed and the slot's KEY TYPE stays in EEPROM. The ECC
        * path does not have this shape: ecc_priv_flash() writes the type byte
@@ -519,9 +527,11 @@ describe('classic RSA keys in RSA slots', {
        * publishes the result - so the slot goes on reporting a 2048-bit key that
        * is not a key, and is certainly not the one that was wiped.
        *
-       * If a fix lands, this test fails at the assertion that says the answer is
-       * not an error - which is exactly the notice that wants reading.
+       * WITH THE FIX: the wiped slot answers OKGETPUBKEY as a never-loaded one does,
+       * "Error no RSA Private Key set in this slot".
        */
+      const fixed = firmwareFixes(device).includes('0013');
+      log(`firmware fixes: ${firmwareFixes(device).join(', ') || 'none'} - expecting the ${fixed ? 'fixed' : 'pinned'} wipe`);
       const key = keypair();
       await loadKeys(device, [
         { slot: SLOT_DECRYPT, typeByte: RSA_2048 | FEATURE_DECRYPT, pq: key.pq },
@@ -543,6 +553,15 @@ describe('classic RSA keys in RSA slots', {
 
       await device.restart({ signal });
       await device.ensureUnlocked(PINS.primary, { signal });
+
+      if (fixed) {
+        const wiped = await refusal(device,
+          { msg: okmsg.MSG.OKGETPUBKEY, slot: SLOT_DECRYPT, field: 0 }, { signal });
+        log(`after the wipe: ${wiped.said}`);
+        assert.match(wiped.said, /Error no RSA Private Key set in this slot/,
+          `with fix 0013 a wiped RSA slot reads as empty; it answered: ${wiped.said}`);
+        return;
+      }
 
       const { reports, bytes: after } = await modulus(device, SLOT_DECRYPT, { signal });
       log(`after the wipe: ${reports.length} reports, first bytes ` +
