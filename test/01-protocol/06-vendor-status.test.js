@@ -16,6 +16,7 @@
 const { describe, it } = require('../../lib/harness');
 const { IFACE, okmsg } = require('../../lib/device');
 const { PINS } = require('../../lib/config');
+const { deviceModel, isDuo, MODEL_LETTER } = require('../../lib/model');
 
 describe('vendor interface', { state: 'initialized', requires: ['crypto'] }, () => {
   it('broadcasts INITIALIZED while locked, unprompted', async ({ device, assert, signal }) => {
@@ -29,7 +30,8 @@ describe('vendor interface', { state: 'initialized', requires: ['crypto'] }, () 
      * interval regardless of phase.
      */
     const first = await device.waitHid(IFACE.VENDOR, { since, timeoutMs: 2500, signal });
-    assert.equal(okmsg.text(first), 'INITIALIZED', 'a locked device should announce itself');
+    /* HW_MODEL-style suffix on a DUO only: sendInitialized() says INITIALIZED-D there. */
+    assert.equal(okmsg.text(first), isDuo() ? 'INITIALIZED-D' : 'INITIALIZED', 'a locked device should announce itself');
 
     const second = await device.waitHid(IFACE.VENDOR,
       { since: since + 1, timeoutMs: 2500, signal });
@@ -37,7 +39,8 @@ describe('vendor interface', { state: 'initialized', requires: ['crypto'] }, () 
   });
 
   it('does not read the vendor interface at all while locked',
-    async ({ device, assert, signal }) => {
+    async ({ device, assert, signal, skip }) => {
+      if (isDuo()) skip('a DUO does read RawHID while locked (sendInitialized() polls it) - this pins the classic');
       /*
        * Worth pinning down, because the firmware source suggests otherwise.
        * okcore.cpp's OKGETLABELS case has an "Error device locked" branch, so a
@@ -75,9 +78,10 @@ describe('vendor interface', { state: 'initialized', requires: ['crypto'] }, () 
     /*
      * HW_MODEL() appends one character for the hardware variant: 'c' for
      * LQFP/BGA with dual LEDs, 'p'/'n' for DUO, 'o' for the discontinued
-     * original. The emulator builds the Color firmware, so 'c'.
+     * original. Which one is expected is the model under test (lib/model.js).
      */
-    assert.match(model, /^UNLOCKED.*c$/, `unexpected model string: ${model}`);
+    const want = MODEL_LETTER[deviceModel()];
+    assert.match(model, new RegExp(`^UNLOCKED.*${want.source}`), `unexpected model string for a ${deviceModel()}: ${model}`);
   });
 
   it('answers OKGETLABELS once unlocked', async ({ device, assert, signal }) => {

@@ -693,6 +693,25 @@ key cannot have an image pushed into it.
 node bin/okt.js fixture initialized     # build or rebuild, before a run
 ```
 
+## An OnlyKey DUO
+
+The same firmware runs on a DUO, which it detects at boot, and the kit drives
+it differently (`lib/model.js`): buttons 1–3, PIN digits 4–6 as holds of 1–3,
+config mode from button 1 held past 180 rounds, challenge codes mod 3, and its
+PINs set the App's way (one `OKSETPIN` carrying the digits) by the
+`initialized` fixture, whose cache is per model.
+
+```sh
+OKEMU_HARDWARE=duo node bin/okt.js run 01-protocol/44-duo.test.js   # an emulated DUO
+OKT_MODEL=duo node bin/okt.js run --hardware 01-protocol/44-duo.test.js   # a hard DUO
+```
+
+`OKEMU_HARDWARE=duo` needs a node-onlykey-emulator with the `hardware` board
+option; the firmware's own detection then decides, as on a real board. An
+emulator built with `OKEMU_MODEL=duo` is also read as a DUO. Files that only
+make sense on one model require the `duo` or `classic` capability; a press of
+4–6 on a DUO is refused with an error, because no finger can make one.
+
 ## Flashing a key
 
 ```sh

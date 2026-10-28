@@ -38,6 +38,7 @@
 
 const { describe, it } = require('../../lib/harness');
 const { PINS } = require('../../lib/config');
+const { pinPresses } = require('../../lib/model');
 const { IFACE, okmsg } = require('../../lib/device');
 const initialized = require('../../lib/fixtures/states/initialized');
 
@@ -64,7 +65,7 @@ describe('the self-destruct PIN', {
    */
   async function selfDestruct(device, { signal, log }) {
     const from = device.generation;
-    device.pressLine(PINS.selfDestruct.split(''));
+    device.pressLine(pinPresses(PINS.selfDestruct));   /* 6 is a hold of 3 on a DUO */
     const generation = await device.waitForReboot({ from, timeoutMs: 60000, signal });
     log(`the device wiped and came back as generation ${generation}`);
     return generation;
@@ -103,7 +104,7 @@ describe('the self-destruct PIN', {
        * primary PIN that worked a moment ago now unlocks nothing. Pressed
        * rather than asked, because there is no message that reports this. */
       const since = device.mark(IFACE.VENDOR);
-      device.pressLine(PINS.primary.split(''));
+      device.pressLine(pinPresses(PINS.primary));
       await assert.rejects(
         () => device.waitHid(IFACE.VENDOR, { since, match: /^UNLOCKED/, timeoutMs: 8000, signal }),
         /timed out|timeout/i,
