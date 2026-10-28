@@ -51,7 +51,8 @@ const wanted = asked.length
 const withTests = wanted.filter((f) => fs.existsSync(path.join(dir, f, 'tests', 'kit.test.js')));
 
 describe(`the firmware patches' own tests (${withTests.map(numberOf).join(', ') || 'none'})`,
-  { state: 'initialized', timeoutMs: 600000, requires: ['crypto'] }, () => {
+  /* independent: each test is one patch's proof - a failing one never hides the next (lib/harness.js) */
+  { state: 'initialized', timeoutMs: 600000, requires: ['crypto'], independent: true }, () => {
     const ctx = pluginCtx({ debug: hardware ? process.env.OKT_FIRMWARE_DEBUG !== '0' : build.debug === true });
     for (const f of withTests) require(path.join(dir, f, 'tests', 'kit.test.js'))({ it }, ctx);
     const untested = wanted.filter((f) => !withTests.includes(f));
