@@ -48,7 +48,7 @@ describe('record the wallet phrase fixture (OKT_RECORD=1)', {
       fs.mkdirSync(path.dirname(wp.FIXTURE), { recursive: true });
       fs.writeFileSync(wp.FIXTURE, `${JSON.stringify({
         v: 1,
-        why: 'test/01-protocol/39-wallet-phrase-record: a throwaway emulator (set up from blank, random derive key) - its typed backup, and the wallet phrase its derive key gives for the name below. Test keys only.',
+        why: 'test/07-lib/05-wallet-phrase-record: a throwaway emulator (set up from blank, random derive key) - its typed backup, and the wallet phrase its derive key gives for the name below. Test keys only.',
         passphrase: wp.PASSPHRASE,
         name: wp.NAME,
         out: 'bip39-12',

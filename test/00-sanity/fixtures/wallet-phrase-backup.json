@@ -1,6 +1,6 @@
 {
   "v": 1,
-  "why": "test/01-protocol/39-wallet-phrase-record: a throwaway emulator (set up from blank, random derive key) - its typed backup, and the wallet phrase its derive key gives for the name below. Test keys only.",
+  "why": "test/07-lib/05-wallet-phrase-record: a throwaway emulator (set up from blank, random derive key) - its typed backup, and the wallet phrase its derive key gives for the name below. Test keys only.",
   "passphrase": "okt wallet phrase backup passphrase",
   "name": "okt-vector",
   "out": "bip39-12",

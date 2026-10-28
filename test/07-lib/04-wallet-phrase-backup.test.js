@@ -60,7 +60,7 @@ describe('a wallet phrase survives an OnlyKey backup (and does not drift)', {
     async ({ device, assert, signal }) => {
       assert.ok(own && words, 'no phrase from the first test');
       assert.ok(fs.existsSync(wp.FIXTURE),
-        `no fixture at ${wp.FIXTURE}: run 01-protocol/39-wallet-phrase-record.test.js with OKT_RECORD=1, check it, commit it`);
+        `no fixture at ${wp.FIXTURE}: run 07-lib/05-wallet-phrase-record.test.js with OKT_RECORD=1, check it, commit it`);
       const fixture = JSON.parse(fs.readFileSync(wp.FIXTURE, 'utf8'));
       await wp.restore(device, signal, assert, fixture.backup);
       const got = await wp.phraseOf(device, signal);
