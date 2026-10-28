@@ -45,6 +45,8 @@ function usage() {
   console.log(`usage:
   okt run [target...]  [--hardware] [--test <substring>] [--isolate] [--reverse]
                        [--keep-going] [--controls] [--timeout <ms>] [--quiet]
+                       [--jobs <n|auto>]   files on n soft keys at once (default auto: every core but
+                                           one; --jobs 1 = one file after another)
   okt list [target...]
   okt caps
   okt fixture <state>
@@ -112,6 +114,7 @@ function parse(argv) {
     else if (a === '--isolate') out.isolate = true;
     else if (a === '--reverse') out.reverse = true;
     else if (a === '--keep-going') out.keepGoing = true;
+    else if (a === '--jobs') out.jobs = argv[++i] || 'auto';
     else if (a === '--controls') out.controls = true;
     else if (a === '--hardware') out.adapter = 'hardware';
     else if (a === '--no-reboot') out.reboot = false;
@@ -298,6 +301,29 @@ async function main() {
       const { run } = require('../lib/runner');
       if (args.controls) { process.exit(await runControls(args)); }
       if (args.isolate) { process.exit(await runIsolated(args)); }
+      /*
+       * THE FILES ON EVERY CORE BUT ONE, by default (Brad, 2026-10-28: "do it by core count, leaving 1 for the manager -
+       * if a machine has 16 cores, 15 parallel tests should be running"): a soft-key run of more than one file goes to
+       * lib/parallel.js. --jobs 1 is the plain serial run below; a hard key is one device, so it always runs serially -
+       * and so does a single file, which is also what each parallel worker runs (it never starts workers of its own).
+       */
+      if (args.jobs && args.adapter === 'hardware' && args.jobs !== '1') {
+        console.error('--jobs runs soft keys; a hard key is one device - run it without --jobs');
+        process.exit(EXIT.RUNNER_ERROR);
+      }
+      if (args.adapter !== 'hardware') {
+        const { runParallel, jobsFrom } = require('../lib/parallel');
+        const { resolveTargets } = require('../lib/runner');
+        const jobs = jobsFrom(args.jobs || 'auto');
+        let many = false;
+        try { many = resolveTargets(args.targets).length > 1; } catch { /* the serial run reports a bad target */ }
+        if (jobs > 1 && many) {
+          process.exit(await runParallel({
+            targets: args.targets, jobs, keepGoing: args.keepGoing, timeoutMs: args.timeoutMs || undefined,
+            filter: args.filter, reverse: args.reverse,
+          }));
+        }
+      }
 
       const { code } = await run({
         targets: args.targets,
