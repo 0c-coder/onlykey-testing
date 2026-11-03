@@ -310,17 +310,35 @@ describe('HMAC-SHA1 challenge-response over keyboard control transfers', {
     Buffer.from([0xff]),
   ]);
 
+  /**
+   * Write KEY to HMACSHA1_1 over SET_REPORT, in config mode, and come back out
+   * unlocked.
+   *
+   * Since November 2026 a write or wipe over this path
+   * needs config mode, like OKSETPRIV over RawHID. Outside config mode the
+   * same frame is taken as a challenge and answered as one, so there is no
+   * "Successfully set" to wait for. Config mode is left by reboot, the only
+   * way out of it; the HMAC key and its no-press setting live in flash and
+   * EEPROM, so they survive it.
+   */
+  async function writeKeyInConfigMode(device, { assert, signal, log }) {
+    await device.enterConfigMode(PINS.primary, { signal });
+    device.log.clear();
+    const wrote = device.mark(IFACE.VENDOR);
+    await sendKbdBuffer(device, writeKeyBuffer(WRITE_SLOT_1, KEY), { signal });
+    const ack = await waitWritten(device, wrote, { signal });
+    assert.match(ack, /Successfully set ECC Key/, `the HMAC key write failed: ${ack}`);
+    log(`wrote a 20-byte HMAC key to slot ${HMACSHA1_1} in config mode`);
+    await device.restart({ signal });
+    await device.ensureUnlocked(PINS.primary, { signal });
+  }
+
   it('writes an HMAC key, then answers a challenge with the HMAC-SHA1 node:crypto computes',
     async ({ device, assert, signal, log }) => {
       await device.ensureUnlocked(PINS.primary, { signal });
 
       /* ---- write the key to HMACSHA1_1 (slot selector 1) ---- */
-      device.log.clear();
-      const wrote = device.mark(IFACE.VENDOR);
-      await sendKbdBuffer(device, writeKeyBuffer(WRITE_SLOT_1, KEY), { signal });
-      const ack = await waitWritten(device, wrote, { signal });
-      assert.match(ack, /Successfully set ECC Key/, `the HMAC key write failed: ${ack}`);
-      log(`wrote a 20-byte HMAC key to slot ${HMACSHA1_1}`);
+      await writeKeyInConfigMode(device, { assert, signal, log });
 
       /* ---- challenge that slot (selector 0x30) ---- */
       await device.sleep(FADE_SETTLE_MS, { signal });
@@ -383,11 +401,7 @@ describe('HMAC-SHA1 challenge-response over keyboard control transfers', {
        * comment for.
        */
       await device.ensureUnlocked(PINS.primary, { signal });
-      device.log.clear();
-      const wrote = device.mark(IFACE.VENDOR);
-      await sendKbdBuffer(device, writeKeyBuffer(WRITE_SLOT_1, KEY), { signal });
-      const ack = await waitWritten(device, wrote, { signal });
-      assert.match(ack, /Successfully set ECC Key/, `the HMAC key write failed: ${ack}`);
+      await writeKeyInConfigMode(device, { assert, signal, log });
 
       await device.sleep(FADE_SETTLE_MS, { signal });
       device.log.clear();
@@ -434,11 +448,7 @@ describe('HMAC-SHA1 challenge-response over keyboard control transfers', {
        * proven in the first test, on the slot where the key is known.
        */
       await device.ensureUnlocked(PINS.primary, { signal });
-      device.log.clear();
-      const wrote = device.mark(IFACE.VENDOR);
-      await sendKbdBuffer(device, writeKeyBuffer(WRITE_SLOT_1, KEY), { signal });
-      const ack = await waitWritten(device, wrote, { signal });
-      assert.match(ack, /Successfully set ECC Key/, `the HMAC key write failed: ${ack}`);
+      await writeKeyInConfigMode(device, { assert, signal, log });
 
       await device.sleep(FADE_SETTLE_MS, { signal });
       device.log.clear();
@@ -486,5 +496,35 @@ describe('HMAC-SHA1 challenge-response over keyboard control transfers', {
       assert.equal(afterPress.crc, crc16(afterPress.hmac, 20) ^ 0xffff,
         'the answer released by the press does not match its own CRC');
       log(`answered after one press: ${afterPress.hmac.toString('hex')}`);
+    });
+
+  it('refuses to write a key outside config mode (since November 2026)',
+    async ({ device, assert, signal, log }) => {
+      /*
+       * Before the fix any process that could open the keyboard interface
+       * could overwrite or wipe both HMAC slots and slots 1-24 while the key
+       * was unlocked, with no config mode and no button press, and the write
+       * turned the press OFF for that slot. Now the frame needs config mode,
+       * exactly as OKSETPRIV over RawHID does; outside it the same 64 bytes
+       * are handled as an HMAC challenge, so no "Successfully set" (or any
+       * error) is printed. The restart at the end clears whatever that
+       * challenge left pending.
+       */
+      await device.restart({ signal });
+      await device.ensureUnlocked(PINS.primary, { signal });
+      device.log.clear();
+      const wrote = device.mark(IFACE.VENDOR);
+      await sendKbdBuffer(device, writeKeyBuffer(WRITE_SLOT_1, KEY), { signal });
+      let said = null;
+      try {
+        said = await waitWritten(device, wrote, { signal, timeoutMs: 6000 });
+      } catch (err) {
+        if (!/timed out/i.test(String(err && err.message))) throw err;
+      }
+      assert.equal(said, null,
+        `a key write outside config mode was accepted: ${said}`);
+      log('no acknowledgement outside config mode, which is the write being refused');
+      await device.restart({ signal });
+      await device.ensureUnlocked(PINS.primary, { signal });
     });
 });

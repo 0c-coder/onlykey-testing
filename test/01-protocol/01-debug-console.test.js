@@ -28,8 +28,8 @@ describe('debug console', { state: 'blank' }, () => {
     /* Six presses in ONE line: the firmware replays them one per loop()
      * iteration, so the whole burst is one command and gets one echo. This is
      * exactly why PIN entry can be a single write with no host-side delay
-     * between digits to get wrong. */
-    device.pressLine([1, 2, 3, 4, 5, 6]);
+     * between digits to get wrong. Buttons 1-3, which every model has. */
+    device.pressLine([1, 2, 3, 1, 2, 3]);
     await device.log.waitFor(/I received from DEBUG: 49(?!\d)/, { signal });
 
     /* Give any further echoes time to arrive before counting - asserting a
@@ -72,8 +72,8 @@ describe('debug console', { state: 'blank' }, () => {
 
   it('clears only when the caller asks', async ({ device, assert, signal }) => {
     device.log.clear();
-    device.press(4);
-    await device.log.waitFor(/I received from DEBUG: 52(?!\d)/, { signal });
+    device.press(3);   /* a button every model has */
+    await device.log.waitFor(/I received from DEBUG: 51(?!\d)/, { signal });
     assert.ok(device.log.text.length > 0, 'the accumulator should hold what arrived');
 
     device.log.clear();
