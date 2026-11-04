@@ -34,9 +34,22 @@ const webenv = require('../../lib/webenv');
 const session = require('../../lib/gui-session-holder');
 
 const RP_ID = 'localhost';
-const PAGE = `http://${RP_ID}:3000/app/age-derive`;
+/*
+ * TWO PAGES since web app 4.0.0: the old single age-derive page became the AGE
+ * mode of Encrypt (/app/age-encrypt) and of Decrypt (/app/age-decrypt), and
+ * /app/age-derive is gone. Each has its own label field; the ids are unchanged.
+ */
+const PAGE = `http://${RP_ID}:3000/app/age-encrypt`;
+const PAGE_DECRYPT = `http://${RP_ID}:3000/app/age-decrypt`;
 
-const FIELD_DERIVED_KEY_MODE = 21;
+/*
+ * Field 30, the web-agent derive mode - the one okcrypto's deviceAge path reads,
+ * and the one 02-cli/20-xwing-tunnel-lib sets for the same derivation. This was
+ * 21 (derived_key_challenge_mode, the legacy bitfield), which refuses the enum
+ * value 2 as "unsupported user input mode": the file then skipped its first
+ * test and ran the rest against a device it had left in config mode.
+ */
+const FIELD_DERIVED_KEY_MODE = 30;
 /*
  * USER_INPUT_NONE, not a bit.
  *
@@ -58,7 +71,8 @@ describe('the age-derive page', {
   timeoutMs: 240000,
 }, () => {
   let page = null;
-  let third = null;
+  /* node-onlykey-lib over the kit's own transport, for the cross-check below. */
+  let kitLib = null;
   let ageFileB64 = null;
 
   const val = (id) => page.eval(`document.querySelector(${JSON.stringify(`#${id}`)}).value`);
@@ -84,6 +98,17 @@ describe('the age-derive page', {
       });
       const reply = await device.waitHid(IFACE.VENDOR,
         { since, match: /Successfully set|Error/, timeoutMs: 5000, signal });
+      /*
+       * LEAVE CONFIG MODE BEFORE ANY VERDICT. In config mode the FIDO interface
+       * answers nothing (FINDING-fido-silent-in-config-mode: the firmware prints
+       * "ERROR NOT SUPPORTED IN CONFIG MODE" for CTAPHID_INIT and sends no
+       * reply), so a skip or a failed assert thrown from here used to leave the
+       * device there, and every page after it died inside Chromium as
+       * "fido_hid_device.cc:555 FIDO HID device timeout" - a transport fault
+       * in the log for what was a state this file forgot to undo.
+       */
+      await device.restart({ signal });
+      const model = await device.unlock(PINS.primary, { signal });
       if (/unsupported user input mode/.test(okmsg.text(reply))) {
         skip('this build has OK_ALLOW_NO_PRESS off, so user-input mode 2 (no press) ' +
           'is refused by design - onlykey.h ships it commented out and a stale 2 in ' +
@@ -91,15 +116,15 @@ describe('the age-derive page', {
       }
       assert.ok(!/Error/.test(okmsg.text(reply)),
         `setting the derived-key mode failed: ${okmsg.text(reply)}`);
-
-      await device.restart({ signal });
-      const model = await device.unlock(PINS.primary, { signal });
       assert.match(model, /^UNLOCKED/, 'the device is not unlocked');
 
-      /* The kit's own way to the same device, for the cross-checks below. */
-      const imports = webenv.create(device, { signal, rpId: RP_ID });
-      const api = webenv.load(imports, 'onlykey-api.js');
-      third = webenv.load(imports, 'onlykey-3rd-party.js', api)();
+      /*
+       * The kit's own way to the same device, for the cross-check below:
+       * node-onlykey-lib over the in-process bus. The page runs the same
+       * library since the port, but through Chromium's WebAuthn - so the two
+       * agreeing is still two transports agreeing, which is the point.
+       */
+      kitLib = (await webenv.browserLib(device, { signal, rpId: RP_ID })).okcrypto;
     });
 
   it('opens the page', async ({ assert, log }) => {
@@ -107,8 +132,7 @@ describe('the age-derive page', {
     await page.waitFor('!!document.querySelector("#encrypt_start")', { timeoutMs: 60000 });
     log(`opened ${await page.eval('location.href')}`);
 
-    for (const id of ['label', 'plaintext', 'age_file_out', 'identity_out',
-      'decrypt_file_in', 'decrypt_start', 'decrypted_out']) {
+    for (const id of ['label', 'plaintext', 'age_file_out', 'identity_out']) {
       assert.ok(await page.eval(`!!document.querySelector("#${id}")`), `no #${id}`);
     }
   });
@@ -161,8 +185,16 @@ describe('the age-derive page', {
       'the stanza does not carry a full 1120-byte X-Wing ciphertext');
   });
 
-  it('reads its own file back', async ({ assert }) => {
-    /* The page's own round trip, which is what a user would do. */
+  it('reads its own file back', async ({ assert, log }) => {
+    /*
+     * The page's own round trip, which is what a user would do - on the
+     * Decrypt page's AGE mode now, with the same label typed in again.
+     */
+    page.close();
+    page = await session.get().open(PAGE_DECRYPT, { timeoutMs: 60000 });
+    await page.waitFor('!!document.querySelector("#decrypt_start")', { timeoutMs: 60000 });
+    log(`opened ${await page.eval('location.href')}`);
+    await setVal('label', LABEL);
     page.console.length = 0;
 
     await setVal('decrypt_file_in', ageFileB64);
@@ -209,26 +241,13 @@ describe('the age-derive page', {
      * is somebody's data.
      */
     const file = Buffer.from(ageFileB64, 'base64');
-    const m = file.toString('latin1').match(/^-> mlkem768x25519 (\S+)$/m);
-    const ciphertext = Buffer.from(m[1], 'base64');
 
-    /* The device's two halves, asked for by this kit rather than by the page. */
-    const { pkX, seed } = await new Promise((resolve, reject) => {
-      third.derive_xwing_recipient(LABEL, false, (err, x, s) => (
-        err ? reject(new Error(String(err))) : resolve({ pkX: x, seed: s })
-      ));
-    });
-    const ssX = await new Promise((resolve, reject) => {
-      third.derive_xwing_decap(LABEL, Buffer.from(ours.ctXOf(ciphertext)), false,
-        (err, s) => (err ? reject(new Error(String(err))) : resolve(s)));
-    });
-
-    const shared = ours.splitDecapsulate(
-      Buffer.from(ssX), ciphertext, Buffer.from(pkX), Buffer.from(seed)
-    );
-
-    const ageFile = webenv.loadPlain('age_file.js');
-    const opened = await ageFile.decryptAgeFile(file, async () => shared);
+    /*
+     * The device decapsulates for the label; the library opens the file. This
+     * used to ask the web app's former library for two key halves and combine
+     * them host-side - a shape the firmware dropped for device custody.
+     */
+    const opened = await kitLib.deviceAge.decrypt(file, LABEL);
 
     assert.equal(Buffer.from(opened).toString('utf8'), PLAINTEXT,
       'the kit could not open the file the browser sealed');

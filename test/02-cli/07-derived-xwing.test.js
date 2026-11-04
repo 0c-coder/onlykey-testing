@@ -8,7 +8,7 @@
  * key the web app's age-derive page produces on any origin, which is what makes
  * CLI and browser interoperable rather than merely similar.
  *
- * `03-gui/03-xwing-derive` already proves this maths against the device over
+ * `03-gui/03-xwing-derive` (retired 2026-09-29; now 02-cli/20-xwing-tunnel-lib) already proves this maths against the device over
  * the CTAP2 vendor bridge. This is the same firmware arithmetic reached the
  * other way: raw HID, `OKGETPUBKEY`/`OKDECRYPT` with
  * `RESERVED_KEY_WEB_DERIVATION`. Two transports into one derivation, which is
@@ -34,7 +34,7 @@
  *     with the device doing nothing at all.
  *
  * No `derivedkeymode` setup either, and that is a real difference from
- * `03-gui/02-derive` rather than an omission: bit 3 is checked in
+ * `03-gui/02-derive` (retired 2026-09-29; the web app derives through node-onlykey-lib now) rather than an omission: bit 3 is checked in
  * `fido2/ok_extension.cpp`, on the tunnelled path only. The raw-HID branch in
  * `okcrypto.cpp` has no such gate.
  */
@@ -227,7 +227,7 @@ describe('derived X-Wing from the command line', {
 
       const result = await withoutPress(device, assert, () => cli.run('age',
         ['-d', '-i', at('identity.txt'), '-o', at('decrypted.txt'), at('secret.age')],
-        { timeoutMs: 90000, signal, env: { PATH: `${cli.VENV_BIN}:${process.env.PATH}` } }),
+        { timeoutMs: 90000, signal, env: cli.venvPathEnv() }),
       { signal });
 
       assert.equal(result.code, 0, `age -d exited ${result.code}: ${result.stderr}`);
@@ -260,7 +260,7 @@ describe('derived X-Wing from the command line', {
        * decapsulate and not a confirmation nobody gave timing out. */
       const result = await withoutPress(device, assert, () => cli.run('age',
         ['-d', '-i', at('other-identity.txt'), '-o', at('nope.txt'), at('secret.age')],
-        { timeoutMs: 90000, signal, env: { PATH: `${cli.VENV_BIN}:${process.env.PATH}` } }),
+        { timeoutMs: 90000, signal, env: cli.venvPathEnv() }),
       { signal });
 
       assert.notEqual(result.code, 0, `age decrypted with ${OTHER}'s identity`);

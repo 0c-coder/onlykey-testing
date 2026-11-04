@@ -134,7 +134,7 @@ describe('age round trip through the device',
         const primed = device.log.count(/Encrypted Buffer/g);
         const result = await cli.run('age',
           ['-d', '-i', at('wrong-identity.txt'), '-o', at('nope.txt'), at('secret.age')],
-          { timeoutMs: 60000, signal, env: { PATH: `${cli.VENV_BIN}:${process.env.PATH}` } });
+          { timeoutMs: 60000, signal, env: cli.venvPathEnv() });
 
         assert.notEqual(result.code, 0, 'age decrypted a file with the wrong slot');
         assert.ok(!fs.existsSync(at('nope.txt')), 'age wrote output for a decryption that failed');

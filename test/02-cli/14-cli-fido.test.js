@@ -95,6 +95,28 @@ describe('onlykey-cli, the FIDO endpoints', {
     cli.binary('onlykey-cli');
   };
 
+  /*
+   * Windows keeps FIDO HID collections (usage page 0xF1D0) for its own
+   * WebAuthn service: an unelevated process's hidapi does not even list them.
+   * Measured 2026-09-29 over okvhid: the keyboard, vendor and console
+   * collections enumerate, the FIDO one does not, and solo then reports "no
+   * Device found". That is the platform's rule, not the CLI's or the device's,
+   * so it is a skip that says so. Probed rather than assumed: an elevated run
+   * lists the collection and the test runs.
+   */
+  const needFidoHid = async ({ skip, signal }) => {
+    if (process.platform !== 'win32') return;
+    const probe = await cli.run('python3', ['-c', [
+      'import hid',
+      'print(any(d["usage_page"] == 0xf1d0 for d in hid.enumerate(0x1d50, 0x60fc)))',
+    ].join('\n')], { timeoutMs: 20000, signal });
+    if (probe.stdout.trim() !== 'True') {
+      skip('Windows hides FIDO HID collections from unelevated processes ' +
+        '(reserved for its WebAuthn service), so solo cannot reach the FIDO ' +
+        'interface - run elevated to include this test');
+    }
+  };
+
   /** Run a command and count what it put on each interface. */
   async function sent(device, argv, { signal, input = NO_TO_EVERYTHING }) {
     const fido = device.mark(IFACE.FIDO);
@@ -112,6 +134,7 @@ describe('onlykey-cli, the FIDO endpoints', {
   it('`wink` reaches the device over FIDO and comes back',
     async ({ device, assert, signal, log, skip }) => {
       needCli({ skip });
+      await needFidoHid({ skip, signal });
       await device.ensureUnlocked(PINS.primary, { signal });
 
       /*
@@ -136,6 +159,7 @@ describe('onlykey-cli, the FIDO endpoints', {
   it('`credential` reaches the device, and cannot read what it answers',
     async ({ device, assert, signal, log, skip }) => {
       needCli({ skip });
+      await needFidoHid({ skip, signal });
       await device.ensureUnlocked(PINS.primary, { signal });
 
       /*
@@ -165,6 +189,7 @@ describe('onlykey-cli, the FIDO endpoints', {
   it('`set-pin` reaches the device, and reports success it did not have',
     async ({ device, assert, signal, log, skip }) => {
       needCli({ skip });
+      await needFidoHid({ skip, signal });
       await device.ensureUnlocked(PINS.primary, { signal });
 
       /*
@@ -195,6 +220,7 @@ describe('onlykey-cli, the FIDO endpoints', {
   it('`change-pin` replaces a PIN it set itself',
     async ({ device, assert, signal, log, skip }) => {
       needCli({ skip });
+      await needFidoHid({ skip, signal });
       await device.ensureUnlocked(PINS.primary, { signal });
 
       /*
@@ -239,6 +265,7 @@ describe('onlykey-cli, the FIDO endpoints', {
   it('`reset` will not wipe the authenticator without an answer at its prompt',
     async ({ device, assert, signal, log, skip }) => {
       needCli({ skip });
+      await needFidoHid({ skip, signal });
       await device.ensureUnlocked(PINS.primary, { signal });
 
       /*

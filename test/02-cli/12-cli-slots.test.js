@@ -139,7 +139,8 @@ describe('onlykey-cli, the slot and key endpoints', {
         const { result, said } = await sent(device, ['setslot', '1a', field, value], { signal });
         assert.equal(said[0], expected, `setslot ${field} answered: ${JSON.stringify(said)}`);
         assert.equal(result.stdout.trim(), said[0],
-          `the CLI printed something else for ${field}`);
+          `the CLI printed something else for ${field}: ${JSON.stringify(result.stdout.trim())} `
+          + `where the device said ${JSON.stringify(said[0])}`);
       }
       log(`${fields.length} slot fields, each acknowledged in its own words`);
 

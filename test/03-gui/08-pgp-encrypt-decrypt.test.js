@@ -7,6 +7,13 @@
  * decrypt.js call them, with `navigator.credentials.get` pointed at
  * lib/device/ctap2.js instead of at a browser's WebAuthn stack.
  *
+ * THE ENGINE IS THE PORT'S (2026-09-29): src/onlykey-lib/pgp-engine.js from the
+ * web app checkout - the old engine's surface on node-onlykey-lib's openpgp
+ * and classic-key hooks, over the library's browser stack. It replaced
+ * onlykey-pgp.js (kbpgp + the in-repo device library), which this file used to
+ * load; the modes, slots, status texts and callbacks are the same, which is
+ * what these tests hold it to.
+ *
  * That ordering is the whole reason section 3 is split at the file number: a
  * failure HERE is the library, and only once this passes does a failure in
  * nw.js mean the PAGE. The device half is not the variable either -
@@ -78,24 +85,48 @@ describe('the web app\'s encrypt and decrypt pages, at the library tier', {
    * passing `false` here would arm a branch no page ever arms.
    */
   async function connect(device, armored, { signal }) {
-    const imports = webenv.create(device, { signal, console: verbose() });
-    const api = webenv.load(imports, 'onlykey-api.js');
-    await new Promise((resolve, reject) => {
-      api.connect((err) => (err ? reject(new Error(String(err))) : resolve()));
+    const { okcrypto, window, app } = await webenv.browserLib(device, { signal, console: verbose() });
+    const createPgpEngine = webenv.webappModule('onlykey-lib/pgp-engine.js');
+    const pgp = createPgpEngine({
+      app,
+      okLib: { okcrypto: async () => okcrypto },
+      /* plugin.js's getKey, reduced to its armored-input branch: nothing here fetches. */
+      getKey: (value) => Promise.resolve(value),
+      window,
     });
-    api.getKey = (value) => Promise.resolve(value);
-    api.request_pgp_pubkey = () => Promise.resolve({ value: armored, on_error: () => {} });
-
-    const pgp = webenv.load(imports, 'onlykey-pgp.js')(api).api();
-    return { api, pgp, openpgp: webenv.openpgp() };
+    return { pgp, openpgp: webenv.openpgp() };
   }
 
-  /** Watch the status line the pages put on their button - see doPinTimer(). */
+  /* The engine with NO device: an okLib that fails the test if anything reaches for it. */
+  function pagelessEngine() {
+    const { window, app } = webenv.create(null, {});
+    const createPgpEngine = webenv.webappModule('onlykey-lib/pgp-engine.js');
+    return createPgpEngine({
+      app,
+      okLib: { okcrypto: async () => { throw new Error('this mode reached for the device'); } },
+      getKey: (url) => Promise.resolve(url || false),
+      window,
+    });
+  }
+
+  /**
+   * Watch the status line the pages put on their button - see doPinTimer().
+   *
+   * Two wordings. Web app 4.0.0 says "Confirm on your OnlyKey (Ns) - tap any
+   * button, or press 6-2-5 if it asks for a challenge code": in the firmware's
+   * default press mode ANY button authorises (onlykey-pgp.js explains why the
+   * old line overstated it). Older copies said "You have N seconds to enter
+   * challenge code 6,2,5 on OnlyKey". The digits are in both, and they are
+   * still the oracle below - so both are read, and a copy that shows no digits
+   * at all still fails by name.
+   */
   function watchChallenge(pgp) {
     const seen = [];
     pgp.on('status', (message) => {
-      const m = /challenge code ([0-9,]+) on OnlyKey/.exec(String(message));
-      if (m) seen.push(m[1].split(',').map(Number));
+      const text = String(message);
+      const m = /challenge code ([0-9,]+) on OnlyKey/.exec(text)
+        || /press ([0-9]+(?:-[0-9]+)+) if it asks for a challenge code/.exec(text);
+      if (m) seen.push(m[1].split(/[,-]/).map(Number));
     });
     return seen;
   }
@@ -124,16 +155,6 @@ describe('the web app\'s encrypt and decrypt pages, at the library tier', {
     )), reject);
   });
 
-  /*
-   * The api object a page hands the PGP layer when no device is wanted.
-   *
-   * `getKey` is plugin.js's, down to the branch that matters here: an empty box
-   * resolves to FALSE rather than to an empty string, which is what turns the
-   * dead guards below into a hang instead of an error.
-   */
-  const pagelessApi = () => ({
-    getKey: (url) => Promise.resolve(url || false),
-  });
 
   it('Encrypt Only produces a message openpgp.js opens, and never touches the device',
     async ({ device, assert, log }) => {
@@ -150,8 +171,7 @@ describe('the web app\'s encrypt and decrypt pages, at the library tier', {
 
       const primed = device.log.count(PRIMED);
 
-      const imports = webenv.create(null, {});
-      const pgp = webenv.load(imports, 'onlykey-pgp.js')(pagelessApi()).api();
+      const pgp = pagelessEngine();
       pgp._$mode('Encrypt Only');
 
       const armored = await encryptWith(pgp, recipient.armored, '', PLAINTEXT);
@@ -159,9 +179,9 @@ describe('the web app\'s encrypt and decrypt pages, at the library tier', {
       assert.match(String(armored), /^-----BEGIN PGP MESSAGE-----/,
         'startEncryption did not produce an armored PGP message');
 
-      /* The oracle: a library that has never seen this device opens it with the
-       * private half. Self-consistency would have proved nothing here, because
-       * kbpgp wrote the message and kbpgp would happily read its own mistakes. */
+      /* The oracle: openpgp.js, given the private half, opens it. The engine
+       * wrote it with the same openpgp - but through the page's own recipient
+       * handling, which is what a round trip through it proves. */
       const opened = await openpgp.decrypt({
         message: await openpgp.readMessage({ armoredMessage: String(armored) }),
         decryptionKeys: recipient.privateKey,
@@ -173,64 +193,28 @@ describe('the web app\'s encrypt and decrypt pages, at the library tier', {
         'Encrypt Only primed a confirmation on the device - this mode must reach no device at all');
     });
 
-  it('startEncryption\'s empty-argument guards are UNREACHABLE, and the mode hangs instead',
+  it('an empty recipient is refused by name, and reaches no device',
     async ({ device, assert, log }) => {
       /*
-       * SURFACE: none. Pinned as it ships, and written to FAIL when it is fixed.
-       *
-       * startEncryption opens with two guards:
-       *
-       *     if (to_pgpkeys.value == "" && ...) { _api.emit("error", ...); return; }
-       *     if (from_signer.value == "" && ...) { ... }
-       *
-       * but both pages pass STRINGS - `page.urlinputbox.value`, already
-       * dereferenced - so `.value` is undefined on arrival and `undefined == ""`
-       * is false. Neither guard can fire. startDecryption's equivalents test the
-       * string itself and are fine, which is what makes this a slip rather than a
-       * convention.
-       *
-       * What happens instead is worse than a missing message. The empty string
-       * reaches `keyStore.loadPublic("")`, which emits its own error and RETURNS
-       * without resolving its promise - so the `await` above it never settles,
-       * the callback never fires, and the page's output box never fills. That
-       * exact symptom - "the box never fills" - is also what a WebAuthn rpId
-       * mistake looks like from the browser, which is why it is worth naming
-       * here where there is no browser to blame.
+       * SURFACE: none. The old engine's guards tested `.value` on strings and
+       * could never fire - an empty recipient hung the page ("the box never
+       * fills"), pinned here until it was fixed. The port's engine checks the
+       * string itself: it says so, by name, and returns without a callback, as
+       * every other refusal on the page does.
        */
       const primed = device.log.count(PRIMED);
-
-      const imports = webenv.create(null, {});
-      const pgp = webenv.load(imports, 'onlykey-pgp.js')(pagelessApi()).api();
+      const pgp = pagelessEngine();
       pgp._$mode('Encrypt Only');
 
       const errors = [];
       pgp.on('error', (message) => errors.push(String(message)));
-
-      const settled = { done: false };
-      encryptWith(pgp, '', '', PLAINTEXT).then(
-        () => { settled.done = true; }, () => { settled.done = true; }
-      );
-
-      /* Bounded, because the point is that it never finishes: a race rather than
-       * a wait, so this costs two seconds instead of a watchdog. */
-      await device.sleep(2000);
+      encryptWith(pgp, '', '', PLAINTEXT).catch(() => {});
+      await device.sleep(500);
 
       log(`errors emitted: ${JSON.stringify(errors)}`);
-      assert.equal(settled.done, false,
-        'startEncryption called back with an empty recipient - the .value guards now fire, ' +
-        'so this pin can be replaced by an assertion about WHICH error came back');
-      /*
-       * WHICH message, not merely that one arrived - the two are one word apart
-       * and they come from opposite sides of the guard. The guard says "...to
-       * encrypt :(" and returns cleanly; loadPublic says "...pgp key :(" and
-       * abandons the promise. Matching loosely would let a fixed guard pass this
-       * test while the first assertion caught it, which is a confusing way to
-       * report a fix.
-       */
-      assert.ok(errors.includes("I need recipient's public pgp key :("),
-        `the empty input was reported as ${JSON.stringify(errors)}, not by loadPublic - ` +
-        'if this is now the guard\'s "...to encrypt :(" then the guard fires and this pin is done');
-      assert.equal(device.log.count(PRIMED), primed, 'a failed encrypt reached the device');
+      assert.ok(errors.includes("I need recipient's public pgp key to encrypt :("),
+        `an empty recipient was reported as ${JSON.stringify(errors)}`);
+      assert.equal(device.log.count(PRIMED), primed, 'a refused encrypt reached the device');
     });
 
   it('Sign Only signs on RSA slot 2, and openpgp.js verifies the signature',
@@ -242,7 +226,7 @@ describe('the web app\'s encrypt and decrypt pages, at the library tier', {
        * The first time this kit has driven a PGP signature through the shipped
        * library. The device holds only P and Q; openpgp.js holds the whole key
        * and has never spoken to the device - so a signature it verifies proves
-       * the device recomputed the private exponent correctly AND that kbpgp
+       * the device recomputed the private exponent correctly AND that the engine
        * assembled a packet a standard implementation accepts.
        */
       const openpgp = webenv.openpgp();
@@ -265,10 +249,9 @@ describe('the web app\'s encrypt and decrypt pages, at the library tier', {
         'Sign Only did not produce an armored PGP message');
 
       /*
-       * THE ORACLE. openpgp.js looks the signature up by the issuer key id kbpgp
-       * patched in - `onlykey.custom_keyid`, which is the primary of the key the
-       * page was given - and verifies it against the public half of exactly the
-       * key whose factors are in slot 2.
+       * THE ORACLE. openpgp.js looks the signature up by its issuer key id - the
+       * primary of the key the page was given - and verifies it against the
+       * public half of exactly the key whose factors are in slot 2.
        */
       const verified = await openpgp.verify({
         message: await openpgp.readMessage({ armoredMessage: String(armored) }),
@@ -290,8 +273,8 @@ describe('the web app\'s encrypt and decrypt pages, at the library tier', {
        */
       const packet = pqc.packetFromConsole(device);
       assert.ok(packet, 'the device never dumped the packet it hashed');
-      assert.equal(packet.length, 64,
-        `kbpgp signs a SHA-512 digest, so the device should have hashed 64 bytes, not ${packet.length}`);
+      assert.ok([28, 32, 48, 64].includes(packet.length),
+        `an RSA signature sends the device a bare SHA-2 digest (28/32/48/64 bytes), not ${packet.length}`);
       assert.ok(challenges.length >= 1, 'the library never announced a challenge code');
       log(`library said ${challenges[0]}, device hashed ${packet.length} bytes`);
       assert.equal(challenges[0].join(','), pqc.challengeDigitsFor(packet).join(','),
@@ -339,8 +322,8 @@ describe('the web app\'s encrypt and decrypt pages, at the library tier', {
        * SURFACE: FIDO for the operation, vendor for the key, console for the
        * press window. The decrypt half of the pair, and the one that crosses the
        * keyhandle boundary: a PKCS#1 v1.5 ciphertext for RSA-2048 is a whole
-       * modulus, 256 bytes, so u2fSignBuffer sends it as 228 + 28 - two
-       * keyhandles with an advancing opt3. 23-rsa-tunnel proves the firmware
+       * modulus, 256 bytes, so it goes as two sealed keyhandles (171 bytes a
+       * chunk) with an advancing opt3. 23-rsa-tunnel proves the firmware
        * keeps both; this proves the LIBRARY sends both.
        *
        * The message is sealed by openpgp.js to the encryption SUBKEY, which is
@@ -366,8 +349,7 @@ describe('the web app\'s encrypt and decrypt pages, at the library tier', {
       const literals = await pqc.confirmFromConsole(device,
         () => decryptWith(pgp, '', key.armored, String(message)), { signal });
 
-      assert.ok(literals && literals.length >= 1, 'startDecryption returned nothing to read');
-      assert.equal(literals[0].toString(), PLAINTEXT,
+      assert.equal(String(literals), PLAINTEXT,
         'the device did not recover the session key sealed to its own subkey');
 
       /* The request crossed a keyhandle boundary, which is the thing about this
@@ -385,10 +367,9 @@ describe('the web app\'s encrypt and decrypt pages, at the library tier', {
   }) => {
     /*
      * SURFACE: as above. The mode the decrypt page defaults to, and the only one
-     * that puts a THIRD key in play - the sender's, verified host-side by kbpgp
-     * with no device involvement. It runs `unbox` in STRICT mode, unlike Decrypt
-     * Only, so a message whose signature does not check fails the whole call
-     * rather than arriving unsigned.
+     * that puts a THIRD key in play - the sender's, verified host-side by openpgp
+     * with no device involvement. A signature that is present but does not
+     * check fails the whole call; an unsigned message is reported as unsigned.
      */
     const openpgp = webenv.openpgp();
     const key = await pgpRsaKey(openpgp, [USER]);
@@ -413,8 +394,7 @@ describe('the web app\'s encrypt and decrypt pages, at the library tier', {
     const literals = await pqc.confirmFromConsole(device,
       () => decryptWith(pgp, sender.armored, key.armored, String(message)), { signal });
 
-    assert.ok(literals && literals.length >= 1, 'startDecryption returned nothing to read');
-    assert.equal(literals[0].toString(), PLAINTEXT, 'the recovered text is not what was sealed');
+    assert.equal(String(literals), PLAINTEXT, 'the recovered text is not what was sealed');
 
     /*
      * Who signed it, which is the entire difference between this mode and

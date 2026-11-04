@@ -3,7 +3,7 @@
  * python-onlykey 1.3.0), `signpqc`,
  * `decryptpqc`.
  *
- * 05-composite-load and 06-composite-ops already prove the DEVICE does these
+ * 05-composite-load and 06-composite-ops (retired 2026-09-29; now 02-cli/19-composite-tunnel-lib) already prove the DEVICE does these
  * things - the first through a hand-written python snippet, the second through
  * the web app's library. Neither goes through `onlykey-cli`, and that turned
  * out to matter: until this file's fixes there was no CLI route to a composite
@@ -56,7 +56,7 @@ const HALF_ECC = 0;
 
 /*
  * RSA3, and the slot choice is load-bearing. 05-composite-load and
- * 06-composite-ops both keep a composite key in RSA1 and 02-cli/12 uses RSA4;
+ * 06-composite-ops (retired 2026-09-29; now 02-cli/19-composite-tunnel-lib) both keep a composite key in RSA1 and 02-cli/12 uses RSA4;
  * a spec that overwrites a fixture another spec depends on produces failures
  * that read exactly like a firmware regression, which has now happened twice in
  * this project's history (TEST-PLAN's RSA1 and RSA4 collisions). A fixture
@@ -80,7 +80,7 @@ describe('onlykey-cli composite PQC operations', {
   it('generates the key the rest of the file uses', async ({ assert, log }) => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'okt-cliops-'));
 
-    const composite = webenv.loadPlain('composite_pgp.js');
+    const composite = require('node-onlykey-lib/crypto').composite;
     const generated = await composite.generateCompositeKey(webenv.openpgp(), {
       userId: { name: 'Kit', email: 'kit@example.com' },
     });
@@ -92,8 +92,8 @@ describe('onlykey-cli composite PQC operations', {
      * never read back from the device. That is what makes each assertion below
      * a statement about the device rather than a round trip through it.
      */
-    const { ed25519, x25519 } = require('@noble/curves/ed25519.js');
-    const { ml_dsa65 } = require('@noble/post-quantum/ml-dsa.js');
+    const { ed25519, x25519 } = require('node-onlykey-lib/vendor/@noble/curves/ed25519.js');
+    const { ml_dsa65 } = require('node-onlykey-lib/vendor/@noble/post-quantum/ml-dsa.js');
 
     const parts = composite.unpackBlob(blob);
     ed25519Pub = Buffer.from(ed25519.getPublicKey(blob.subarray(0, 32)));
@@ -182,7 +182,7 @@ describe('onlykey-cli composite PQC operations', {
       assert.match(hex, /^[0-9a-f]{128}$/, `not a 64-byte signature: ${hex.slice(0, 80)}`);
       log(`signpqc ecc -> ${hex.slice(0, 16)}…`);
 
-      const { ed25519 } = require('@noble/curves/ed25519.js');
+      const { ed25519 } = require('node-onlykey-lib/vendor/@noble/curves/ed25519.js');
       assert.ok(ed25519.verify(Buffer.from(hex, 'hex'), digest, ed25519Pub),
         'the signature does not verify against the key that was loaded');
     });
@@ -217,14 +217,14 @@ describe('onlykey-cli composite PQC operations', {
         `an ML-DSA-65 signature is 3309 bytes, got ${hex.length / 2}`);
       log(`signpqc pqc -> ${hex.length / 2} bytes, ${hex.slice(0, 16)}…`);
 
-      const { ml_dsa65 } = require('@noble/post-quantum/ml-dsa.js');
+      const { ml_dsa65 } = require('node-onlykey-lib/vendor/@noble/post-quantum/ml-dsa.js');
       assert.ok(ml_dsa65.verify(Buffer.from(hex, 'hex'), digest, mldsaPub),
         'the ML-DSA-65 signature does not verify against the seed that was loaded');
     });
 
   it('decryptpqc recovers the X25519 shared secret',
     async ({ device, assert, signal, log }) => {
-      const { x25519 } = require('@noble/curves/ed25519.js');
+      const { x25519 } = require('node-onlykey-lib/vendor/@noble/curves/ed25519.js');
 
       const ephemeralSk = x25519.utils.randomSecretKey();
       const ephemeralPub = Buffer.from(x25519.getPublicKey(ephemeralSk));
@@ -263,7 +263,7 @@ describe('onlykey-cli composite PQC operations', {
        * hashed means they only match when every packet arrived. That makes
        * this test measure the SEND as well as the decapsulation.
        */
-      const { ml_kem768 } = require('@noble/post-quantum/ml-kem.js');
+      const { ml_kem768 } = require('node-onlykey-lib/vendor/@noble/post-quantum/ml-kem.js');
 
       const { publicKey } = ml_kem768.keygen(Uint8Array.from(mlkemSeed));
       const { cipherText, sharedSecret } = ml_kem768.encapsulate(publicKey);

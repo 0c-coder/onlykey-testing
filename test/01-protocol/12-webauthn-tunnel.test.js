@@ -24,6 +24,7 @@ const { describe, it } = require('../../lib/harness');
 const { PINS } = require('../../lib/config');
 const { Ctap2 } = require('../../lib/device/ctap2');
 const tunnel = require('../../lib/device/tunnel');
+const { connectPayload } = require('../../lib/device/transit');
 const okmsg = require('../../lib/device/okmsg');
 
 /* An X25519 public key wrapped as SPKI, which is what node:crypto imports. */
@@ -47,9 +48,16 @@ describe('WebAuthn tunnel',
     it('answers a vendor command sent as a credential id',
       async ({ device, assert, log, signal }) => {
         let pressed = 0;
+        /*
+         * The 43-byte OKCONNECT payload: time, our ephemeral public key,
+         * browser and OS. Since November 2026 the firmware refuses a
+         * shorter handle with INVALID_LENGTH instead of
+         * reading the missing bytes off its stack; a bare 32-byte key used to
+         * get by on that.
+         */
         handshake = await tunnel.send(ctap, {
           cmd: okmsg.MSG.OKCONNECT,
-          data: crypto.randomBytes(32),           // an ephemeral public key
+          data: connectPayload(crypto.randomBytes(32)),
         }, {
           timeoutMs: 30000,
           signal,
@@ -99,7 +107,8 @@ describe('WebAuthn tunnel',
         assert.match(text, /^UNLOCKED/, `unexpected status text: ${JSON.stringify(text)}`);
         assert.match(text, /v\d+\.\d+\.\d+/, 'no firmware version in the tunnelled status');
         assert.equal(text, vendorVersion,
-          'the tunnel and the vendor interface disagree about the firmware version');
+          'the tunnel and the vendor interface disagree about the firmware version: tunnel '
+          + `${JSON.stringify(text)} (${text.length}), vendor ${JSON.stringify(vendorVersion)} (${String(vendorVersion).length})`);
       });
 
     it('generates a fresh key for every handshake', async ({ device, assert, log, signal }) => {
@@ -110,7 +119,7 @@ describe('WebAuthn tunnel',
       let pressed = 0;
       const second = await tunnel.send(ctap, {
         cmd: okmsg.MSG.OKCONNECT,
-        data: crypto.randomBytes(32),
+        data: connectPayload(crypto.randomBytes(32)),
       }, {
         timeoutMs: 30000,
         signal,

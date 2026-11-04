@@ -95,11 +95,11 @@ describe('onlykey-cli, loading keys from PGP files', {
    * same call it makes, keeps the private key, and packs the blob with the same
    * `packBlob()`. Doing it this way rather than reimplementing the offsets is
    * what keeps this test about the FILE PARSE rather than about the layout,
-   * which `03-gui/05-composite-blob` already owns.
+   * which `03-gui/05-composite-blob` (retired 2026-09-29; now node-onlykey-lib's composite tests + 02-cli/05) already owns.
    */
   async function compositeKeyFile(name) {
     const openpgp = webenv.openpgp();
-    const cp = webenv.loadPlain('composite_pgp.js');
+    const cp = require('node-onlykey-lib/crypto').composite;
 
     openpgp.clearHardwareHooks();
     const { privateKey, publicKey } = await openpgp.generateKey({
@@ -241,7 +241,7 @@ describe('onlykey-cli, loading keys from PGP files', {
        * signature that fails here, which is the transposition 03-gui/06 warns
        * about arriving from a different direction.
        */
-      const { ed25519 } = require('@noble/curves/ed25519.js');
+      const { ed25519 } = require('node-onlykey-lib/vendor/@noble/curves/ed25519.js');
       const expected = Buffer.from(ed25519.getPublicKey(key.blob.subarray(0, 32)));
       assert.ok(ed25519.verify(Buffer.from(hex, 'hex'), digest, expected),
         'the signature does not verify against the key in the file - the bridge and the ' +

@@ -99,7 +99,7 @@ emulated column WAS a whole-tree sweep as of 2026-08-06 02:16Z (353 passed,
 own (15 passed, 04:13Z) and the tree has not run end to end since. PLAN says so in
 place rather than leaving the arithmetic to mislead. The hardware column is
 2026-08-05 16:24Z and has seen none of the files in either table above. Section 3 is the one most exposed to drift, since its browser tier
-depends on nw.js and the onlykey.github.io checkout rather than on anything this
+depends on nw.js and the onlykey.github.io checkout (now apps.onlykey.io) rather than on anything this
 repo pins.
 
 **And watch the run budget when a file lands.** `RUN_MAX` is 30 minutes; the tree
@@ -1124,10 +1124,10 @@ called "the app" in half the prose here.
 
 | | section 3's | section 4's |
 |---|---|---|
-| checkout | `onlykey/onlykey.github.io` | `onlykey/OnlyKey-App` |
+| checkout | `onlykey/onlykey.github.io` (NOW: `apps.onlykey.io`, web app 4.0.0 on node-onlykey-lib) | `onlykey/OnlyKey-App` |
 | what it is | a web app served by its own express server on port 3000, opened in nw.js | a PACKAGED nw.js app (`manifest_version: 2`, Chrome-App style), loaded from `build/` |
 | how it reaches the device | WebAuthn (`navigator.credentials.get`) through the vendor tunnel | **`chrome.hid`** - the Chrome Apps HID API, `app/scripts/onlyKey/OnlyKeyComm.js` |
-| nw.js | the kit's own 0.114.0-sdk | its own dependency, `nw ^0.71.1` |
+| nw.js | the kit's own 0.114.0-sdk | its own dependency, `nw ^0.71.1` (NOW 2026-09-29: pinned 0.114.0, opens app.html directly) |
 | covered | 84 tests, both tiers | nothing |
 
 Everything the kit knows about driving nw.js (`lib/gui.js`) was built for the
@@ -1258,7 +1258,8 @@ first and has never been pointed at the second.
       the exception both survive - so do not spend a second attempt on that flag.
 
       **`npm install --ignore-scripts` in the App: DECIDED AND VERIFIED, do not
-      re-litigate.** The App's `nw ^0.71.1` is a RUNTIME dependency, so a plain
+      re-litigate.** The App's `nw ^0.71.1` (NOW 0.114.0, and its package.json allowScripts approves the
+      download, so a plain install fetches it) is a RUNTIME dependency, so a plain
       install downloads a ~150MB runtime the kit has no use for - it drives the
       App with its own nw, as the measurement above shows. Measured on a clean
       copy: **install 6s / 711 packages / 71MB total, with `node_modules/nw` at
@@ -2088,9 +2089,15 @@ Under nwjs-sdk-v0.71.1 - the line the App's own package.json pins
     OKT_NW_BINARY=/opt/ok/nw71/nwjs-sdk-v0.71.1-linux-x64/nw DISPLAY=:99 \
       node bin/okt.js run test/04-app/10-session.test.js ... test/04-app/19-stop.test.js
 
-TODO: make lib/gui.js findNw() prefer an SDK matching the App's pinned nw
-for section 4 (section 3 can stay on 0.114), and find out what 0.114 is
-waiting on - the App will have to move off 0.71 eventually.
+RESOLVED 2026-09-29 (bm-ok OnlyKey-App use-node-onlykey-lib 2fb2596). What 0.114
+waits on is the Chrome-app launch itself. With package.json `main: app.js`, the
+window is created by the background page (`chrome.app.window.create`), and it
+never finishes parsing, even for `<body>hi</body>`. `persistent: true` does not
+help (0/5 Linux, 0/3 Windows); `main: app.html` does. The App now pins nw
+0.114.0 and opens app.html directly, which it had to anyway: under 0.71.1
+(Node 19.3) node-onlykey-lib's ES-module @noble cannot be require()d. The kit
+matches the window as a `page` target (lib/app.js isTargetOfType). VM 04-app:
+29/0/0 on the kit's 0.114 SDK.
 
 ## FINDING: the first FIDO packet after unlock can be swallowed by vendor traffic (2026-09-23)
 
@@ -2105,7 +2112,7 @@ App's packet and never answered, in all 7 runs. Sent first, or 5 s later, it
 was answered every time. The console shows the swallowed report parsed as
 CTAPHID (`Recv packet` ... `length`, then no `adding a new cid`).
 
-Pre-existing (not a v3.0.5 change). On hardware it means: App open + a FIDO
+Pre-existing (not a v3.1.0 change). On hardware it means: App open + a FIDO
 client's very first request after unlock can be lost; browsers retry INIT, so
 it is probably invisible there, but anything that sends one INIT and waits
 would hang. `17` now opens its CTAPHID channel before its vendor traffic.

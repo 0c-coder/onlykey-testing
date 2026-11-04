@@ -57,7 +57,10 @@ describe('tunnel format', { device: false }, () => {
   it('refuses a payload too big for a credential id', async ({ assert }) => {
     await assert.rejects(
       async () => tunnel.encodeRequest({ cmd: 0xE4, data: Buffer.alloc(250) }),
-      /credential ID holds/
+      // The LIMIT, not the wording: the encoder is node-onlykey-lib's now, and
+      // its message ("... the maximum payload is 245. Chunk the request ...")
+      // is not the kit's old one. 245 is what the firmware's credential ID holds.
+      /245/
     );
   });
 

@@ -27,16 +27,41 @@
  */
 'use strict';
 
+/*
+ * A bigger libuv thread pool, set before anything uses it.
+ *
+ * node-hid's async reads each hold a pool thread for as long as the handle is
+ * open, and the pool is 4 threads by default. The hardware adapter opens four
+ * interfaces on Linux, so nothing else that runs on the pool - webcrypto's
+ * digests, async fs, zlib - ever gets a thread: openpgp.readKey() waited
+ * forever against a hard key and returned at once on the emulator (whose HID
+ * lives in the device host, another process). A CLI child has its own pool.
+ */
+if (!process.env.UV_THREADPOOL_SIZE) process.env.UV_THREADPOOL_SIZE = '16';
+
 const { EXIT } = require('../lib/report');
 
 function usage() {
   console.log(`usage:
   okt run [target...]  [--hardware] [--test <substring>] [--isolate] [--reverse]
-                       [--controls] [--timeout <ms>] [--quiet]
+                       [--keep-going] [--controls] [--timeout <ms>] [--quiet]
+                       [--jobs <n|auto>]   files on n soft keys at once (default auto: every core but
+                                           one; --jobs 1 = one file after another)
   okt list [target...]
   okt caps
   okt fixture <state>
   okt flash [hexfile]  [--no-reboot] [--delay <ms>]
+  okt byhand           [--only <id,id>] [--list] [--save-baseline]
+
+okt byhand is section 06-byhand, and only runs this way - never with okt run.
+It runs the real tools (python onlykey-cli, lib-agent, onlykey-js, gpg,
+ssh-keygen) against a PHYSICAL key that is plugged in and LOCKED. You unlock
+it with the PIN and press Enter once; after that you only press the key's
+button when a red PRESS NOW appears. It stops at the first failure, and the
+whole run is in runs/byhand-latest.log. The kit opens nothing, so the tools
+get the key to themselves. --list shows the steps; --only runs some by id.
+Each step's result is compared with test/06-byhand/baseline.json; a run of
+every step that passes can replace it with --save-baseline.
 
 targets are section names (01-protocol), directories, or single files.
 
@@ -52,6 +77,12 @@ cannot stand alone. It is the gate for new files, and costs a boot per test.
 one run and catches the other order fault: a test that is BROKEN BY an earlier
 one passes alone and passes in file order, so --isolate cannot see it. Between
 the natural order, --reverse and --isolate, both directions are covered.
+
+--keep-going runs past a file whose test FAILED, to the next file, instead of
+ending the run there - so a known failure cannot hide the files after it. The
+run still stops on anything that means the instrument is broken (the device
+host dying, a watchdog, a timeout, a fixture that will not build). Use it for
+baselines: every file is counted, and the summary names the failing files.
 
 --controls is the gate for NEGATIVE assertions. A test that says "the device did
 not reveal X" is worthless if the instrument was broken - the absence and the
@@ -73,6 +104,7 @@ function parse(argv) {
     command: argv[2] || 'help', targets: [], filter: null,
     timeoutMs: null, quiet: false, adapter: 'emulated',
     reboot: true, delayMs: null, isolate: false, reverse: false, controls: false,
+    keepGoing: false, only: [], list: false, saveBaseline: false,
   };
   for (let i = 3; i < argv.length; i++) {
     const a = argv[i];
@@ -81,11 +113,16 @@ function parse(argv) {
     else if (a === '--quiet') out.quiet = true;
     else if (a === '--isolate') out.isolate = true;
     else if (a === '--reverse') out.reverse = true;
+    else if (a === '--keep-going') out.keepGoing = true;
+    else if (a === '--jobs') out.jobs = argv[++i] || 'auto';
     else if (a === '--controls') out.controls = true;
     else if (a === '--hardware') out.adapter = 'hardware';
     else if (a === '--no-reboot') out.reboot = false;
     else if (a === '--delay') out.delayMs = parseInt(argv[++i], 10);
     else if (a === '--emulated') out.adapter = 'emulated';
+    else if (a === '--only') out.only = String(argv[++i] || '').split(',').filter(Boolean);
+    else if (a === '--list') out.list = true;
+    else if (a === '--save-baseline') out.saveBaseline = true;
     else if (a === '--help' || a === '-h') { usage(); process.exit(0); }
     else if (a.startsWith('-')) { console.error(`unknown option: ${a}`); process.exit(EXIT.RUNNER_ERROR); }
     else out.targets.push(a);
@@ -264,6 +301,29 @@ async function main() {
       const { run } = require('../lib/runner');
       if (args.controls) { process.exit(await runControls(args)); }
       if (args.isolate) { process.exit(await runIsolated(args)); }
+      /*
+       * THE FILES ON EVERY CORE BUT ONE, by default (Brad, 2026-10-28: "do it by core count, leaving 1 for the manager -
+       * if a machine has 16 cores, 15 parallel tests should be running"): a soft-key run of more than one file goes to
+       * lib/parallel.js. --jobs 1 is the plain serial run below; a hard key is one device, so it always runs serially -
+       * and so does a single file, which is also what each parallel worker runs (it never starts workers of its own).
+       */
+      if (args.jobs && args.adapter === 'hardware' && args.jobs !== '1') {
+        console.error('--jobs runs soft keys; a hard key is one device - run it without --jobs');
+        process.exit(EXIT.RUNNER_ERROR);
+      }
+      if (args.adapter !== 'hardware') {
+        const { runParallel, jobsFrom } = require('../lib/parallel');
+        const { resolveTargets } = require('../lib/runner');
+        const jobs = jobsFrom(args.jobs || 'auto');
+        let many = false;
+        try { many = resolveTargets(args.targets).length > 1; } catch { /* the serial run reports a bad target */ }
+        if (jobs > 1 && many) {
+          process.exit(await runParallel({
+            targets: args.targets, jobs, keepGoing: args.keepGoing, timeoutMs: args.timeoutMs || undefined,
+            filter: args.filter, reverse: args.reverse,
+          }));
+        }
+      }
 
       const { code } = await run({
         targets: args.targets,
@@ -272,6 +332,7 @@ async function main() {
         timeoutMs: args.timeoutMs || undefined,
         testFilter: makeFilter(args.filter),
         testOrder: args.reverse ? 'reverse' : 'natural',
+        keepGoing: args.keepGoing,
       });
       process.exit(code);
       break;
@@ -356,6 +417,12 @@ async function main() {
           : '  key did NOT come back on the bus - check it');
       }
       console.log(`flashed ${result.blocks} blocks via ${result.devPath}`);
+      break;
+    }
+
+    case 'byhand': {
+      const { runByHand } = require('../lib/byhand');
+      process.exit(await runByHand({ only: args.only, list: args.list, saveBaseline: args.saveBaseline }));
       break;
     }
 

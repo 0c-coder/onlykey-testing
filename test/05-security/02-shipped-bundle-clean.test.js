@@ -79,7 +79,16 @@ describe('the shipped bundle carries no debug hooks or key logging', {
       bundle.includes('pgp_setpqc_cmd') && bundle.includes('composite'));
   });
 
-  it('contains none of the debug surface', async ({ assert, log }) => {
+  it('contains none of the debug surface', async ({ assert, skip, log }) => {
+    /*
+     * NO BUNDLE, NO VERDICT. When the test above skipped (no built app here -
+     * a CI runner never checks one out), `bundle` is still null, and reading it
+     * crashed this test with a TypeError - a failure of the kit reported as a
+     * failure of the bundle (the GitHub Actions gate, 2026-09-30). Skip with
+     * the same reason instead.
+     */
+    if (bundle === null) skip(`no bundle was read - no built app at ${APP_DIR}`);
+
     /*
      * CONTROL: the matcher works on this haystack. Without it, a bundle read
      * as an empty string would report six clean absences.

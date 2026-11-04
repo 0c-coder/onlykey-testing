@@ -15,7 +15,7 @@
  * is the device USING it - so this asks the device to sign, and checks the
  * signature against a public key derived from the very bytes that were sent.
  *
- * That closes the loop 06-composite-key left open. There the blob was checked
+ * That closes the loop 06-composite-key (retired 2026-09-29; now node-onlykey-lib's composite tests + 02-cli/05) left open. There the blob was checked
  * against the key material it was packed from; here the DEVICE's use of it is
  * checked against the same material, which is the only way to find out whether
  * the firmware reads the layout the way the web app writes it.
@@ -36,7 +36,7 @@ const HALF_ECC = 0;
 
 describe('loading a composite PGP-PQC key', {
   state: 'initialized',
-  requires: ['crypto', 'client-access', 'webapp-lib', 'xwing-math'],
+  requires: ['crypto', 'client-access', 'xwing-math'],
   timeoutMs: 240000,
 }, () => {
   let blob = null;
@@ -50,7 +50,7 @@ describe('loading a composite PGP-PQC key', {
      * and neither can do the other's job. If they disagree about the layout,
      * this is where it shows.
      */
-    const composite = webenv.loadPlain('composite_pgp.js');
+    const composite = require('node-onlykey-lib/crypto').composite;
     const generated = await composite.generateCompositeKey(webenv.openpgp(), {
       userId: { name: 'Kit', email: 'kit@example.com' },
     });
@@ -64,7 +64,7 @@ describe('loading a composite PGP-PQC key', {
      * the signature check below meaningful: it can only pass if the device
      * stored, and later used, exactly these bytes.
      */
-    const { ed25519 } = require('@noble/curves/ed25519.js');
+    const { ed25519 } = require('node-onlykey-lib/vendor/@noble/curves/ed25519.js');
     ed25519Pub = Buffer.from(ed25519.getPublicKey(blob.subarray(0, 32)));
     log(`blob ready, ed25519 public ${ed25519Pub.toString('hex').slice(0, 16)}…`);
   });
@@ -177,7 +177,7 @@ describe('loading a composite PGP-PQC key', {
      * means the firmware read the layout the way the web app wrote it, the CLI
      * chunked it correctly across three 57-byte messages, and the slot kept it.
      */
-    const { ed25519 } = require('@noble/curves/ed25519.js');
+    const { ed25519 } = require('node-onlykey-lib/vendor/@noble/curves/ed25519.js');
     const ok = ed25519.verify(Buffer.from(hex, 'hex'), digest, ed25519Pub);
 
     assert.ok(ok, 'the signature does not verify against the key that was loaded');
@@ -210,7 +210,7 @@ describe('loading a composite PGP-PQC key', {
 
     const signed = (result.stdout.match(/^SIGNED:([0-9a-f]+)$/m) || [])[1];
     if (signed) {
-      const { ed25519 } = require('@noble/curves/ed25519.js');
+      const { ed25519 } = require('node-onlykey-lib/vendor/@noble/curves/ed25519.js');
       assert.ok(!ed25519.verify(Buffer.from(signed, 'hex'), digest, ed25519Pub),
         'an empty slot produced a signature valid under the loaded key');
     }

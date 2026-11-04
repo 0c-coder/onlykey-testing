@@ -88,7 +88,10 @@ const IN_TWO = 'profileTWOsecret2';
 
 describe('the second profile, and the PIN that reaches it', {
   state: 'initialized',
-  requires: ['crypto', 'keyboard-capture'],
+  /* Classic only: the DUO fixture sets no second-profile PIN - a DUO's extra
+   * profiles come from button 3 (Duo_config[1]), and the App leaves that PIN
+   * slot empty. A DUO second-profile PIN, if anyone uses one, wants its own file. */
+  requires: ['crypto', 'keyboard-capture', 'classic'],
   timeoutMs: 180000,
 }, () => {
   /**

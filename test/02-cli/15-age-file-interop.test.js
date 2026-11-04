@@ -1,9 +1,12 @@
 /*
  * The web app's age container, against the real `age` binary - both directions.
  *
- * `03-gui/04-age-file` proves the web app WRITES a correct age v1 container: it
- * checks the chunk boundary, the last-chunk flag and what the header MAC
- * covers, against its own reading. That is the part a round trip cannot see,
+ * THE WEB APP'S CONTAINER CODE IS node-onlykey-lib's crypto.age since the web
+ * app moved onto the library (2026-09-29) - one copy, the one every client
+ * runs - so that is what is loaded here. The library's own suite checks the
+ * container's structure (the chunk boundary, the last-chunk flag, what the
+ * header MAC covers) against its own reading, as the retired
+ * `03-gui/04-age-file` did for the web app's former copy. That is the part a round trip cannot see,
  * and it is worth having - but it is still one implementation agreeing with
  * itself. An implementation that is wrong in the same way twice encrypts and
  * decrypts its own files perfectly forever; what breaks is interoperability.
@@ -93,7 +96,7 @@ describe('the web app\'s age container against the real age binary', {
     cli.binary('age-plugin-onlykey');
   };
 
-  const ageFile = () => webenv.loadPlain('age_file.js');
+  const ageFile = () => require('node-onlykey-lib/crypto').age;
 
   /*
    * DEVICE CUSTODY (firmware 2026-09): the device holds both halves of a derived
@@ -328,7 +331,7 @@ describe('the web app\'s age container against the real age binary', {
         const out = path.join(dir, 'opened.txt');
         const dec = await withoutPress(device, () => cli.run('age',
           ['-d', '-i', path.join(dir, 'identity.txt'), '-o', out, sealed],
-          { timeoutMs: 90000, signal, env: { PATH: `${cli.VENV_BIN}:${process.env.PATH}` } }),
+          { timeoutMs: 90000, signal, env: cli.venvPathEnv() }),
         { signal });
 
         assert.equal(dec.code, 0,

@@ -3,7 +3,7 @@
  * writes the field, the device acknowledges that field by name, and - out of
  * config mode - the key BEHAVES as the form said.
  *
- * These are the settings the v3.0.5 release notes send users to. Web PGP with
+ * These are the settings the v3.1.0 release notes send users to. Web PGP with
  * stored keys is off after the upgrade (field 31 bit 0), and "Allow Webcrypt
  * to use my stored keys (PGP)" is how a person turns it on without a command
  * line; field 30 = "no press" is the unattended-agent setting. A form that
@@ -27,11 +27,12 @@
  * restarted between. Defaults are restored in `finally` (21 = 0, 22 = 0,
  * 30 = 1, 31 = 0) over the vendor interface.
  *
- * RUN IT UNDER THE nw.js THE APP SHIPS WITH (0.71.x): OKT_NW_BINARY pointing
- * at an nwjs-sdk-v0.71.1 `nw`. Under nw.js 0.114 the App's window never leaves
- * document.readyState 'loading', its load handler never creates myOnlyKey,
- * and every 04-app test that needs the device fails in waitForDevice - for
- * upstream OnlyKey-App too. See TODO.md.
+ * Runs under the kit's nw.js 0.114 SDK. An App that still launches through the
+ * Chrome-app background page (package.json main: app.js, as upstream 6.0.0
+ * does) never leaves document.readyState 'loading' there, so myOnlyKey is never
+ * created and every device test fails in waitForDevice. The bm-ok App opens
+ * app.html directly and pins nw 0.114. See TODO.md, "04-app: run the App
+ * under nw.js 0.71".
  */
 'use strict';
 

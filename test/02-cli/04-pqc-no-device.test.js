@@ -94,7 +94,7 @@ describe('decrypting with no device on the bus', {
   it('fails, rather than hanging or lying', async ({ assert, signal }) => {
     const result = await cli.run('age',
       ['-d', '-i', at('identity.txt'), '-o', at('decrypted.txt'), at('secret.age')],
-      { timeoutMs: 45000, signal, env: { PATH: `${cli.VENV_BIN}:${process.env.PATH}` } });
+      { timeoutMs: 45000, signal, env: cli.venvPathEnv() });
 
     /*
      * Three separate failures, because they are three different bugs.

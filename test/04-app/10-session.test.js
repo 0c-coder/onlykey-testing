@@ -97,8 +97,8 @@ describe('section 4 app session', {
   it('reaches chrome.hid from the app window, and getDevices answers', async ({ assert, log }) => {
     /*
      * PROVE THE INSTRUMENT. Everything section 4 will ever assert rests on the
-     * App being able to reach the HID API under THIS nw.js - which is the kit's
-     * own 0.114.0-sdk rather than the 0.71 the App declares - so it is checked
+     * App being able to reach the HID API under THIS nw.js - the kit's own
+     * 0.114.0-sdk, not whatever runtime the App under test declares - so it is checked
      * here once, in the file that starts the session, rather than assumed by
      * every file after it.
      *

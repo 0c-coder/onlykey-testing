@@ -42,7 +42,7 @@
  * `okcrypto_transit_open()` before it looks at the command, and a frame that
  * does not authenticate is discarded whole - not dispatched as noise, simply
  * never dispatched, which from here looks like the device ignoring the request. Written in the kit rather than borrowed from the shipped library
- * deliberately - `03-xwing-derive` lets the library send its option bytes because
+ * deliberately - `03-xwing-derive` (retired 2026-09-29; now 02-cli/20-xwing-tunnel-lib) lets the library send its option bytes because
  * the library IS its subject, and here the subject is the firmware's chunking, so
  * a second client would just be testing the library again. It also keeps this
  * file in section 1, where a test is worth double.

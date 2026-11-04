@@ -35,7 +35,7 @@
  *      challenge". That cost the first run of this file and is exactly the shape
  *      of thing that made the row look unworkable.
  *
- * Worth knowing next door: `03-gui/02-derive` sets the DERIVED mode with
+ * Worth knowing next door: `03-gui/02-derive` (retired 2026-09-29; the web app derives through node-onlykey-lib now) sets the DERIVED mode with
  * `String(8)`, which is 0x38. That happens to work, because the tunnelled path
  * tests `is_bit_set(mode, 3)` and 0x38 has bit 3 set. It is right by accident,
  * and it would not survive being changed to any other value.
@@ -412,7 +412,7 @@ describe('stored keys, across all six key types', {
       assert.bytes(pub, atKeygen,
         'the stored key is not the one the keygen returned');
 
-      const { ml_kem768 } = require('@noble/post-quantum/ml-kem.js');
+      const { ml_kem768 } = require('node-onlykey-lib/vendor/@noble/post-quantum/ml-kem.js');
       const { cipherText, sharedSecret } = ml_kem768.encapsulate(new Uint8Array(pub));
       log(`ciphertext ${cipherText.length} bytes`);
 

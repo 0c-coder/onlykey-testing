@@ -50,7 +50,7 @@ const RP_ID = 'okt.test';
 
 describe('the FIDO2 path in config mode', {
   state: 'initialized',
-  requires: ['crypto', 'webapp-lib'],
+  requires: ['crypto'],
   timeoutMs: 180000,
 }, () => {
   /*
@@ -104,19 +104,21 @@ describe('the FIDO2 path in config mode', {
        */
       duringBridge = await (async () => {
         try {
-          const imports = webenv.create(device, { signal });
-          const api = webenv.load(imports, 'onlykey-api.js');
           /*
-           * BOUNDED, and it has to be. onlykey-api.js's connect() has no
-           * timeout of its own - it waits for a WebAuthn assertion that, on a
-           * device whose FIDO endpoint is silent, simply never arrives. Left
-           * unbounded it does not fail, it hangs, and the run dies on the
-           * inactivity watchdog with no result recorded. Measured: exactly
-           * that, for 30s, the first time this test ran.
+           * The web app's connect, as it runs now: node-onlykey-lib's browser
+           * stack (the web app's own in-repo library is gone) doing a plain
+           * OKCONNECT over the tunnel.
            */
-          const handshake = new Promise((resolve, reject) => {
-            api.connect((err) => (err ? reject(new Error(String(err))) : resolve()));
-          }).then(() => Boolean(api.sharedsec));
+          const { okcrypto } = await webenv.browserLib(device, { signal, connect: false });
+          /*
+           * BOUNDED, and it has to be. A WebAuthn assertion on a device whose
+           * FIDO endpoint is silent simply never arrives; left unbounded it does
+           * not fail, it hangs, and the run dies on the inactivity watchdog with
+           * no result recorded. Measured: exactly that, for 30s, the first time
+           * this test ran (against the web app's former library).
+           */
+          const handshake = okcrypto.connectTunnel({ timeoutMs: 8000 })
+            .then((answer) => Boolean(answer && answer.status), () => false);
 
           return await Promise.race([
             handshake,

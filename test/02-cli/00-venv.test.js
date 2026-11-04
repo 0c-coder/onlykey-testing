@@ -43,11 +43,23 @@ describe('onlykey-cli',
        * and takes the first match, so if it can see two devices, nothing below
        * says anything about WHICH one answered.
        */
+      /*
+       * One device, counted per platform. Linux paths name the USB port
+       * (`1-1:1.0` -> `1-1`), so its interfaces group into one. Windows lists
+       * each HID collection as its own device with no shared bus in the path
+       * (okvhid's four are separate SWD devices), so there it counts vendor
+       * collections (usage page 0xFFAB) - the one python-onlykey opens, and
+       * one per OnlyKey.
+       */
       const result = await cli.run('python3', ['-c', [
-        'import hid, json',
+        'import hid, json, sys',
         'ds = [d for d in hid.enumerate(0, 0)',
         '      if d["vendor_id"] == 0x1d50 and d["product_id"] == 0x60fc]',
-        'print(json.dumps(sorted({d["path"].decode().split(":")[0] for d in ds})))',
+        'if sys.platform == "win32":',
+        '    ids = sorted(d["path"].decode() for d in ds if d["usage_page"] == 0xffab)',
+        'else:',
+        '    ids = sorted({d["path"].decode().split(":")[0] for d in ds})',
+        'print(json.dumps(ids))',
       ].join('\n')], { timeoutMs: 20000, signal });
 
       assert.equal(result.code, 0, `enumeration failed: ${result.stderr}`);

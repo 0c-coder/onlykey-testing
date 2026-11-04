@@ -88,9 +88,14 @@ describe('onlykey-cli, the settings endpoints', {
     return { result, said: okmsg.text(reply).trim() };
   }
 
-  /** Both readers of one message have to agree. */
+  /**
+   * Both readers of one message have to agree. The message names BOTH sides:
+   * this failed on release 3.1.0 (2026-09-28) with no way to tell whether the
+   * CLI read the wrong reply, printed nothing, or added to it (audit #9).
+   */
   const relayed = (assert, result, said) => assert.equal(result.stdout.trim(), said,
-    'the CLI printed something other than what the device answered');
+    `the CLI printed something other than what the device answered: CLI `
+    + `${JSON.stringify(result.stdout.trim())} (exit ${result.code}), device ${JSON.stringify(said)}`);
 
   /**
    * Unlocked, and definitely NOT in config mode.
@@ -264,7 +269,7 @@ describe('onlykey-cli, the settings endpoints', {
        * The one endpoint here whose ACCEPT path is driven as well as its
        * refusal, and it earns the cost - entering config mode is a long press, a
        * relock and a second unlock - because this bit is load-bearing elsewhere:
-       * 03-gui/02-derive needs it set before the web app's derive call works at
+       * 03-gui/02-derive (retired 2026-09-29; the web app derives through node-onlykey-lib now) needs it set before the web app's derive call works at
        * all, and sets it over the kit's own vendor interface rather than through
        * this command. Driving the CLI's version here is what says the two agree.
        *

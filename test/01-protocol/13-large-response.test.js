@@ -188,7 +188,7 @@ describe('large responses arrive whole', {
        * Ed25519(32) | ML-DSA seed(32) | X25519(32) | ML-KEM seed(64) - and seeds
        * expand into valid keys whatever their bytes, so the device will sign
        * with it. Nothing here checks the signature verifies; that is
-       * 02-cli/06-composite-ops' job, against a published public key. What is
+       * 02-cli/06-composite-ops (retired 2026-09-29; now 02-cli/19-composite-tunnel-lib)' job, against a published public key. What is
        * being tested is the LENGTH of the road home.
        */
       await pqc.readyForKeygen(device, { signal });

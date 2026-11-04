@@ -200,29 +200,48 @@ describe('onlykey-agent derived-v2 (opt-in HKDF derivation)', {
     assert.match(okmsg.text(reply), /Error invalid derived key slot/, 'OKDECRYPT 221 was not refused');
   });
 
-  it('onlykey-gpg init --skey/--dkey derived-v2 signs with code 221', async ({ device, assert, signal, log }) => {
+  it('onlykey-gpg init --skey/--dkey derived-v2 signs with code 221', async ({ device, assert, signal, log, skip }) => {
+    { const why = cli.gpgUnusableWhy(); if (why) skip(why); }
     const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'okt-v2-gpg-'));
     const homedir = path.join(parent, 'gnupg');
     try {
       const before = (device.log.text.match(/Agent derivation v2 private key/g) || []).length;
       const init = await pqc.confirmFromConsole(device, () => cli.run('onlykey-gpg',
         ['init', 'OKT v2 <okt-v2@example.com>', '--homedir', homedir, '--skey', 'derived-v2', '--dkey', 'derived-v2'],
-        { timeoutMs: 240000, signal, env: { PATH: `${cli.VENV_BIN}:${process.env.PATH}` } }), { signal });
+        { timeoutMs: 240000, signal, env: cli.venvPathEnv() }), { signal });
       log(`onlykey-gpg init exited ${init.code}`);
       assert.equal(init.code, 0, `init failed: ${init.stderr.slice(-1500) || init.stdout.slice(-1500)}`);
-      const script = fs.readFileSync(path.join(homedir, 'run-agent.sh'), 'utf8');
-      assert.includes(script, '--skey-slot=derived-v2', 'run-agent.sh does not record the v2 signing key');
-      assert.includes(script, '--dkey-slot=derived-v2', 'run-agent.sh does not record the v2 decryption key');
+      /* Windows' gpg cannot run a shell script as agent-program, so init writes a batch file there. */
+      const agentScript = process.platform === 'win32' ? 'run-agent.cmd' : 'run-agent.sh';
+      const script = fs.readFileSync(path.join(homedir, agentScript), 'utf8');
+      assert.includes(script, '--skey-slot=derived-v2', `${agentScript} does not record the v2 signing key`);
+      assert.includes(script, '--dkey-slot=derived-v2', `${agentScript} does not record the v2 decryption key`);
       const after = (device.log.text.match(/Agent derivation v2 private key/g) || []).length;
       assert.ok(after > before, 'no v2 derivation ran during init');
     } finally {
-      for (const pid of agentsFor(homedir)) { try { process.kill(pid); } catch { /* gone */ } }
-      fs.rmSync(parent, { recursive: true, force: true });
+      const running = agentsFor(homedir);
+      log(`agent pids for this homedir: ${JSON.stringify(running)}`);
+      for (const pid of running) { try { process.kill(pid); } catch { /* gone */ } }
+      /* Windows will not delete a folder while a just-killed agent still holds its log open. */
+      for (let i = 0; i < 50 && agentsFor(homedir).length; i++) await device.sleep(100, { signal });
+      fs.rmSync(parent, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     }
   });
 });
 
 function agentsFor(dir) {
+  /*
+   * Windows has no /proc: ask WMI for the command lines, window hidden. The
+   * agent there is pythonw.exe running the onlykey-gpg-agent launcher, not a
+   * gpg-agent.exe; paths compare case-insensitively.
+   */
+  if (process.platform === 'win32') {
+    const out = require('child_process').spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*gpg-agent*' } | ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" }"],
+      { encoding: 'utf8', timeout: 30000, windowsHide: true }).stdout || '';
+    return out.split(/\r?\n/).filter((l) => l.toLowerCase().includes(dir.toLowerCase()))
+      .map((l) => Number(l.split('\t')[0])).filter(Boolean);
+  }
   const pids = [];
   for (const entry of fs.readdirSync('/proc')) {
     if (!/^\d+$/.test(entry)) continue;
